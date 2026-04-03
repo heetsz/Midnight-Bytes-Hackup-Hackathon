@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Editor settings (optional)
+.vscode/
+.idea/
+
+# Expo / React Native app (only app/ folder)
+app/node_modules/
+app/.expo/
+app/.expo-shared/
+app/dist/
+app/build/
+
+# Logs for Expo app
+app/npm-debug.log*
+app/yarn-debug.log*
+app/yarn-error.log*
+app/*.log
