@@ -19,7 +19,7 @@ from services.fraud_engine import (
     get_decision,
     infer_fraud_type,
 )
-from services.low_slow_detector import calculate_low_slow_score, update_weekly_stats
+from services.low_slow_detector import calculate_low_slow_score
 from services.ring_detector import calculate_ring_score
 from services.telegram_service import send_fraud_alert
 from utils.explainability import get_risk_level, merge_explanations
@@ -56,11 +56,7 @@ async def analyze_transaction(payload: TransactionAnalyzeRequest) -> Transaction
     amount_score, amount_reasons, _ = await calculate_amount_anomaly_score(
         db, payload.user_id, payload.amount, now
     )
-    low_slow_score, low_slow_reasons = await calculate_low_slow_score(
-        db,
-        payload.user_id,
-        payload.amount,
-    )
+    low_slow_score, low_slow_reasons = await calculate_low_slow_score(db, payload.user_id)
     velocity_score, velocity_reasons, velocity_meta = await calculate_velocity_score(
         db, user, payload.user_id, now
     )
@@ -126,7 +122,6 @@ async def analyze_transaction(payload: TransactionAnalyzeRequest) -> Transaction
 
     try:
         await db.transactions.insert_one(transaction_doc)
-        await update_weekly_stats(payload.user_id, payload.amount, db)
     except PyMongoError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to store transaction: {exc}") from exc
 
