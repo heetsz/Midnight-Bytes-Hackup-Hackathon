@@ -340,10 +340,45 @@ async def run_low_slow_detection(user_id: str, new_amount: float, db: AsyncIOMot
     }
 
 
-async def calculate_low_slow_score(db: AsyncIOMotorDatabase, user_id: str) -> tuple[int, list[str]]:
-    # Compatibility wrapper used by existing route flow.
+async def calculate_low_slow_score(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    new_amount: float | None = None,
+) -> tuple[int, list[str]]:
+    """Compatibility wrapper used by route flow.
+
+    If new_amount is provided, compute a dynamic low-and-slow score using
+    rolling amount anomaly + weekly drift + velocity checks.
+    """
     weekly_stats = await get_weekly_stats(user_id=user_id, db=db)
     drift_result = detect_gradual_drift(weekly_stats)
-    score = int(drift_result.get("drift_score", 0))
-    message = str(drift_result.get("message", "No strong low-and-slow signal detected"))
-    return score, [message]
+
+    if new_amount is None:
+        score = int(drift_result.get("drift_score", 0))
+        message = str(drift_result.get("message", "No strong low-and-slow signal detected"))
+        return score, [message]
+
+    txns = await get_last_30_days_transactions(user_id=user_id, db=db)
+    amounts = [float(item["amount"]) for item in txns]
+    zscore_result = calculate_rolling_zscore(amounts, float(new_amount))
+    velocity_result = await velocity_check(user_id=user_id, new_amount=float(new_amount), db=db)
+
+    score = int(
+        round(
+            zscore_result["risk_score"] * 0.40
+            + drift_result["drift_score"] * 0.40
+            + velocity_result["velocity_risk"] * 0.20
+        )
+    )
+
+    reasons: list[str] = []
+    if zscore_result["z_score"] > 2:
+        reasons.append("Transaction amount is highly above recent 30-day behavior")
+    if drift_result["drift_detected"]:
+        reasons.append(str(drift_result["message"]))
+    if velocity_result["is_suspicious"]:
+        reasons.append("Transaction velocity deviates from user baseline")
+    if not reasons:
+        reasons.append("No strong low-and-slow signal detected")
+
+    return min(score, 100), reasons

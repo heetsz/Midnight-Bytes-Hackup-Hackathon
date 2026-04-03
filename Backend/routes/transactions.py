@@ -56,7 +56,11 @@ async def analyze_transaction(payload: TransactionAnalyzeRequest) -> Transaction
     amount_score, amount_reasons, _ = await calculate_amount_anomaly_score(
         db, payload.user_id, payload.amount, now
     )
-    low_slow_score, low_slow_reasons = await calculate_low_slow_score(db, payload.user_id)
+    low_slow_score, low_slow_reasons = await calculate_low_slow_score(
+        db,
+        payload.user_id,
+        payload.amount,
+    )
     velocity_score, velocity_reasons, velocity_meta = await calculate_velocity_score(
         db, user, payload.user_id, now
     )
