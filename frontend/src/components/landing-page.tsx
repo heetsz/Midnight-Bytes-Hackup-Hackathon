@@ -258,36 +258,32 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
         Fraud Type Breakdown Chart
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)] items-center">
-        <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 space-y-2">
-          <div className="text-xs text-slate-400">Fraud by Type (Today)</div>
-          <div className="space-y-2">
-            {chartData.map((item) => (
-              <div key={item.name} className="grid grid-cols-[140px_minmax(0,1fr)_48px] items-center gap-2 text-sm">
-                <span className="text-slate-200 truncate">{item.name}</span>
-                <div className="h-3 rounded-full border border-slate-700/80 bg-slate-900 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-indigo-400 to-cyan-300"
-                    style={{ width: `${item.percent}%` }}
-                  />
-                </div>
-                <span className="text-slate-300 text-right">{String(item.percent).padStart(2, "0")}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-2 h-[280px]">
+      <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+        <div className="h-[320px]">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
                 data={chartData}
                 dataKey="value"
                 nameKey="name"
-                innerRadius={58}
-                outerRadius={92}
+                innerRadius={74}
+                outerRadius={116}
                 paddingAngle={2}
                 stroke="rgba(2,6,23,0.8)"
+                labelLine={false}
+                label={({ percent, x, y }) => (
+                  <text
+                    x={x}
+                    y={y}
+                    fill="#e2e8f0"
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    fontSize={12}
+                    fontWeight={600}
+                  >
+                    {`${Math.round((percent ?? 0) * 100)}%`}
+                  </text>
+                )}
               >
                 {chartData.map((entry, index) => (
                   <Cell key={`cell-${entry.name}`} fill={donutColors[index % donutColors.length]} />
