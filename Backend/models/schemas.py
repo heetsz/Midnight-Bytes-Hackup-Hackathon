@@ -65,6 +65,7 @@ class LiveTransactionItem(BaseModel):
     username: str
     amount: float
     fraud_score: int
+    decision: str
     merchant_name: str
     timestamp: datetime
     location: str

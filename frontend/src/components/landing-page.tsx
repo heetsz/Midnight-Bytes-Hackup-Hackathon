@@ -3,7 +3,21 @@ import SectionWithMockup from "@/components/ui/section-with-mockup";
 import { GlobeAnalytics } from "@/components/ui/cobe-globe-analytics";
 import { LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from "react-leaflet";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   Activity,
   AlertTriangle,
@@ -289,7 +303,7 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                   <Cell key={`cell-${entry.name}`} fill={donutColors[index % donutColors.length]} />
                 ))}
               </Pie>
-              <Tooltip
+              <RechartsTooltip
                 formatter={(value: number, name: string) => [`${value} cases`, name]}
                 contentStyle={{
                   background: "rgba(15, 23, 42, 0.95)",
@@ -312,6 +326,7 @@ type LiveTransaction = {
   username: string;
   amount: number;
   fraud_score: number;
+  decision: string;
   merchant_name: string;
   timestamp: string;
   location: string;
@@ -329,29 +344,24 @@ type TrendPoint = {
   fishy: number;
 };
 
-type UserTableRow = {
-  userId: string;
-  username: string;
-  transactions: number;
-  totalAmount: number;
-  avgScore: number;
-  latestLocation: string;
-  latestTime: string;
-  risk: "Safe" | "Bit Risky" | "Fishy";
-};
-
 function LiveTransactionsFeedSection() {
   const [rows, setRows] = useState<LiveTransaction[]>([]);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [searchType, setSearchType] = useState<
-    "all" | "userId" | "username" | "location" | "risk"
+    "all" | "txn_id" | "username" | "user_id" | "merchant" | "location"
   >("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [decisionFilter, setDecisionFilter] = useState<"all" | "APPROVE" | "REVIEW" | "BLOCK">("all");
+  const [riskFilter, setRiskFilter] = useState<"all" | "safe" | "risky" | "fishy">("all");
   const [sortBy, setSortBy] = useState<
-    "username" | "transactions" | "totalAmount" | "avgScore" | "latestTime"
-  >("latestTime");
+    "time" | "amount" | "fraud_score" | "txn_id"
+  >("time");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [selectedTxnId, setSelectedTxnId] = useState<string | null>(null);
+  const [activeTransaction, setActiveTransaction] = useState<LiveTransaction | null>(null);
+  const [activeUserMeta, setActiveUserMeta] = useState<{
+    usualCity: string;
+    trustedDeviceCount: number;
+  } | null>(null);
 
   const fallbackRows = useMemo<LiveTransaction[]>(
     () => [
@@ -361,6 +371,7 @@ function LiveTransactionsFeedSection() {
         username: "Rajesh",
         amount: 48000,
         fraud_score: 94,
+        decision: "BLOCK",
         merchant_name: "CryptoXchange",
         timestamp: new Date().toISOString(),
         location: "Mumbai -> Hyderabad",
@@ -371,6 +382,7 @@ function LiveTransactionsFeedSection() {
         username: "Priya",
         amount: 5200,
         fraud_score: 58,
+        decision: "REVIEW",
         merchant_name: "New Merchant",
         timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
         location: "Pune",
@@ -381,6 +393,7 @@ function LiveTransactionsFeedSection() {
         username: "Suresh",
         amount: 450,
         fraud_score: 8,
+        decision: "APPROVE",
         merchant_name: "Amazon",
         timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
         location: "Bengaluru",
@@ -391,6 +404,7 @@ function LiveTransactionsFeedSection() {
         username: "Ananya",
         amount: 12800,
         fraud_score: 41,
+        decision: "REVIEW",
         merchant_name: "TravelHub",
         timestamp: new Date(Date.now() - 70 * 60 * 1000).toISOString(),
         location: "Delhi",
@@ -401,6 +415,7 @@ function LiveTransactionsFeedSection() {
         username: "Vikram",
         amount: 920,
         fraud_score: 15,
+        decision: "APPROVE",
         merchant_name: "MetroMart",
         timestamp: new Date(Date.now() - 100 * 60 * 1000).toISOString(),
         location: "Chennai",
@@ -411,6 +426,7 @@ function LiveTransactionsFeedSection() {
         username: "Neha",
         amount: 31000,
         fraud_score: 78,
+        decision: "BLOCK",
         merchant_name: "GiftCard Vault",
         timestamp: new Date(Date.now() - 140 * 60 * 1000).toISOString(),
         location: "Kolkata",
@@ -486,123 +502,112 @@ function LiveTransactionsFeedSection() {
   }, []);
 
   useEffect(() => {
-    if (rows.length === 0) {
-      setSelectedTxnId(null);
+    if (!activeTransaction) {
+      setActiveUserMeta(null);
       return;
     }
 
-    if (!selectedTxnId || !rows.some((row) => row.txn_id === selectedTxnId)) {
-      setSelectedTxnId(rows[0].txn_id);
-    }
-  }, [rows, selectedTxnId]);
+    const controller = new AbortController();
 
-  const selectedTransaction = useMemo(
-    () => rows.find((row) => row.txn_id === selectedTxnId) ?? null,
-    [rows, selectedTxnId]
-  );
+    async function loadUserMeta() {
+      try {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(
+          `${baseUrl}/api/user/${activeTransaction.user_id}/profile`,
+          { signal: controller.signal }
+        );
 
-  const userRows = useMemo<UserTableRow[]>(() => {
-    const grouped = rows.reduce<Record<string, UserTableRow>>((acc, row) => {
-      const key = row.user_id;
-      const prev = acc[key];
-      const timestamp = Date.parse(row.timestamp);
-      const existingTime = prev ? Date.parse(prev.latestTime) : 0;
+        if (!response.ok) {
+          throw new Error("profile fetch failed");
+        }
 
-      const currentRisk: "Safe" | "Bit Risky" | "Fishy" =
-        row.fraud_score >= 70 ? "Fishy" : row.fraud_score >= 40 ? "Bit Risky" : "Safe";
-
-      if (!prev) {
-        acc[key] = {
-          userId: row.user_id,
-          username: row.username || row.user_id,
-          transactions: 1,
-          totalAmount: row.amount,
-          avgScore: row.fraud_score,
-          latestLocation: row.location,
-          latestTime: row.timestamp,
-          risk: currentRisk,
+        const data = (await response.json()) as {
+          user?: { city?: string; trusted_devices?: string[] };
         };
-        return acc;
+
+        setActiveUserMeta({
+          usualCity: data.user?.city || "Unknown",
+          trustedDeviceCount: data.user?.trusted_devices?.length ?? 0,
+        });
+      } catch {
+        setActiveUserMeta({ usualCity: "Unknown", trustedDeviceCount: 0 });
       }
+    }
 
-      const totalTransactions = prev.transactions + 1;
-      const totalScore = prev.avgScore * prev.transactions + row.fraud_score;
+    void loadUserMeta();
+    return () => controller.abort();
+  }, [activeTransaction]);
 
-      acc[key] = {
-        ...prev,
-        transactions: totalTransactions,
-        totalAmount: prev.totalAmount + row.amount,
-        avgScore: totalScore / totalTransactions,
-        latestLocation: timestamp > existingTime ? row.location : prev.latestLocation,
-        latestTime: timestamp > existingTime ? row.timestamp : prev.latestTime,
-        risk:
-          currentRisk === "Fishy" || prev.risk === "Fishy"
-            ? "Fishy"
-            : currentRisk === "Bit Risky" || prev.risk === "Bit Risky"
-            ? "Bit Risky"
-            : "Safe",
-      };
-
-      return acc;
-    }, {});
-
+  const filteredRows = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
 
-    const filtered = Object.values(grouped).filter((item) => {
+    const filtered = rows.filter((row) => {
+      const riskBucket = row.fraud_score >= 70 ? "fishy" : row.fraud_score >= 40 ? "risky" : "safe";
+
+      if (decisionFilter !== "all" && row.decision !== decisionFilter) {
+        return false;
+      }
+
+      if (riskFilter !== "all" && riskBucket !== riskFilter) {
+        return false;
+      }
+
       if (!normalizedQuery) {
         return true;
       }
 
-      const composite = [
-        item.userId,
-        item.username,
-        item.latestLocation,
-        item.risk,
+      const allText = [
+        row.txn_id,
+        row.username,
+        row.user_id,
+        row.merchant_name,
+        row.location,
+        row.decision,
       ]
         .join(" ")
         .toLowerCase();
 
       if (searchType === "all") {
-        return composite.includes(normalizedQuery);
+        return allText.includes(normalizedQuery);
       }
 
-      if (searchType === "userId") {
-        return item.userId.toLowerCase().includes(normalizedQuery);
+      if (searchType === "txn_id") {
+        return row.txn_id.toLowerCase().includes(normalizedQuery);
       }
 
       if (searchType === "username") {
-        return item.username.toLowerCase().includes(normalizedQuery);
+        return row.username.toLowerCase().includes(normalizedQuery);
       }
 
-      if (searchType === "location") {
-        return item.latestLocation.toLowerCase().includes(normalizedQuery);
+      if (searchType === "user_id") {
+        return row.user_id.toLowerCase().includes(normalizedQuery);
       }
 
-      return item.risk.toLowerCase().includes(normalizedQuery);
+      if (searchType === "merchant") {
+        return row.merchant_name.toLowerCase().includes(normalizedQuery);
+      }
+
+      return row.location.toLowerCase().includes(normalizedQuery);
     });
 
     return filtered.sort((a, b) => {
       const direction = sortOrder === "asc" ? 1 : -1;
 
-      if (sortBy === "username") {
-        return a.username.localeCompare(b.username) * direction;
+      if (sortBy === "txn_id") {
+        return a.txn_id.localeCompare(b.txn_id) * direction;
       }
 
-      if (sortBy === "transactions") {
-        return (a.transactions - b.transactions) * direction;
+      if (sortBy === "amount") {
+        return (a.amount - b.amount) * direction;
       }
 
-      if (sortBy === "totalAmount") {
-        return (a.totalAmount - b.totalAmount) * direction;
+      if (sortBy === "fraud_score") {
+        return (a.fraud_score - b.fraud_score) * direction;
       }
 
-      if (sortBy === "avgScore") {
-        return (a.avgScore - b.avgScore) * direction;
-      }
-
-      return (Date.parse(a.latestTime) - Date.parse(b.latestTime)) * direction;
+      return (Date.parse(a.timestamp) - Date.parse(b.timestamp)) * direction;
     });
-  }, [rows, searchQuery, searchType, sortBy, sortOrder]);
+  }, [rows, searchQuery, searchType, decisionFilter, riskFilter, sortBy, sortOrder]);
 
   return (
     <section id="live-transactions" className="space-y-10">
@@ -619,221 +624,258 @@ function LiveTransactionsFeedSection() {
             <LiveTrendChart points={trend} />
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)] items-start">
-            <div className="rounded-3xl bg-slate-950/80 border border-white/10 backdrop-blur-xl p-5 space-y-3">
-              <div className="flex items-center justify-between text-xs text-slate-400 border border-white/20 px-4 py-3 rounded-xl">
-                <span className="tracking-[0.12em] uppercase">Live Transactions</span>
-                <span>Click any transaction</span>
-              </div>
-              <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-                {rows.slice(0, 20).map((row) => {
-                  const risk = getRiskMeta(row.fraud_score);
-                  const isSelected = selectedTxnId === row.txn_id;
-
-                  return (
-                    <button
-                      key={row.txn_id}
-                      type="button"
-                      onClick={() => setSelectedTxnId(row.txn_id)}
-                      className={cn(
-                        "w-full text-left rounded-2xl border px-4 py-3 transition-all",
-                        isSelected
-                          ? "border-indigo-400/70 bg-indigo-500/10"
-                          : "border-slate-700/80 bg-slate-900/70 hover:border-indigo-400/40 hover:bg-slate-900"
-                      )}
-                    >
-                      <div className="flex items-center justify-between gap-3 text-sm">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className={cn("inline-flex h-2.5 w-2.5 rounded-full", risk.dotClass)} />
-                          <span className="text-slate-50 font-semibold tracking-[0.08em] uppercase text-base truncate">{row.txn_id}</span>
-                          <span className="text-slate-300 truncate">{row.username || row.user_id}</span>
-                        </div>
-                        <span className="text-slate-200">Score: {row.fraud_score}</span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                        <span className="text-emerald-300 font-medium">
-                          {new Intl.NumberFormat("en-IN", {
-                            style: "currency",
-                            currency: "INR",
-                            maximumFractionDigits: 0,
-                          }).format(row.amount)}
-                        </span>
-                        <span className="text-slate-300">{row.merchant_name}</span>
-                        <span className="text-slate-400">
-                          {new Date(row.timestamp).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                        <span className="text-slate-400">{row.location}</span>
-                      </div>
-                      <div className="mt-2">
-                        <span className={cn("inline-flex rounded-full border px-2 py-1 text-[10px]", risk.badgeClass)}>
-                          {risk.label}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+          <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
+            <div className="text-sm font-semibold tracking-wide text-slate-100">
+              Entire Live Transactions
             </div>
 
-            <aside className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4 lg:sticky lg:top-4">
-              <div className="text-xs uppercase tracking-[0.14em] text-slate-400">
-                Transaction Details Sidebar
-              </div>
-
-              {selectedTransaction ? (
-                <>
-                  <div className="space-y-2">
-                    <h3 className="text-lg font-semibold text-slate-100">{selectedTransaction.txn_id}</h3>
-                    <span
-                      className={cn(
-                        "inline-flex rounded-full border px-2 py-1 text-xs",
-                        getRiskMeta(selectedTransaction.fraud_score).badgeClass
-                      )}
-                    >
-                      {getRiskMeta(selectedTransaction.fraud_score).label}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <DetailItem label="Username" value={selectedTransaction.username || selectedTransaction.user_id} />
-                    <DetailItem label="User ID" value={selectedTransaction.user_id} />
-                    <DetailItem
-                      label="Amount"
-                      value={new Intl.NumberFormat("en-IN", {
-                        style: "currency",
-                        currency: "INR",
-                        maximumFractionDigits: 0,
-                      }).format(selectedTransaction.amount)}
-                    />
-                    <DetailItem label="Score" value={String(selectedTransaction.fraud_score)} />
-                    <DetailItem label="Merchant" value={selectedTransaction.merchant_name} />
-                    <DetailItem
-                      label="Time"
-                      value={new Date(selectedTransaction.timestamp).toLocaleString()}
-                    />
-                    <DetailItem label="Location" value={selectedTransaction.location} />
-                  </div>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-full border border-indigo-400/70 px-3 py-2 text-sm font-medium text-indigo-200 hover:bg-indigo-500/10 transition"
-                  >
-                    View Details
-                  </button>
-                </>
-              ) : (
-                <p className="text-sm text-slate-400">Select a transaction to view details.</p>
-              )}
-            </aside>
-          </div>
-
-          <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-semibold tracking-tight">Users Data</h3>
-                <p className="text-xs text-slate-400">
-                  Search by type and sort by any major metric.
-                </p>
-              </div>
-              <div className="flex flex-col md:flex-row gap-2 md:items-center">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+              <label className="xl:col-span-1 space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Search In</span>
                 <select
                   value={searchType}
                   onChange={(event) => setSearchType(event.target.value as typeof searchType)}
-                  className="rounded-xl bg-slate-900/80 border border-slate-700/80 px-3 py-2 text-xs text-slate-100"
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
                 >
-                  <option value="all">Search: All</option>
-                  <option value="userId">Search: User ID</option>
-                  <option value="username">Search: Username</option>
-                  <option value="location">Search: Location</option>
-                  <option value="risk">Search: Risk Type</option>
+                  <option value="all">All Fields</option>
+                  <option value="txn_id">Transaction ID</option>
+                  <option value="username">Username</option>
+                  <option value="user_id">User ID</option>
+                  <option value="merchant">Merchant</option>
+                  <option value="location">Location</option>
                 </select>
+              </label>
+
+              <label className="xl:col-span-2 space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Search Query</span>
                 <input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Type to search"
-                  className="rounded-xl bg-slate-900/80 border border-slate-700/80 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500"
+                  placeholder="Search transaction id, user, merchant, location..."
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
                 />
+              </label>
+
+              <label className="xl:col-span-1 space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Decision</span>
                 <select
-                  value={sortBy}
-                  onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
-                  className="rounded-xl bg-slate-900/80 border border-slate-700/80 px-3 py-2 text-xs text-slate-100"
+                  value={decisionFilter}
+                  onChange={(event) => setDecisionFilter(event.target.value as typeof decisionFilter)}
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
                 >
-                  <option value="latestTime">Sort: Latest Time</option>
-                  <option value="username">Sort: Username</option>
-                  <option value="transactions">Sort: Transactions</option>
-                  <option value="totalAmount">Sort: Total Amount</option>
-                  <option value="avgScore">Sort: Average Score</option>
+                  <option value="all">All</option>
+                  <option value="APPROVE">Approve</option>
+                  <option value="REVIEW">Review</option>
+                  <option value="BLOCK">Block</option>
                 </select>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSortOrder((current) => (current === "asc" ? "desc" : "asc"))
-                  }
-                  className="rounded-xl border border-indigo-400/60 px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-500/10"
+              </label>
+
+              <label className="xl:col-span-1 space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Risk</span>
+                <select
+                  value={riskFilter}
+                  onChange={(event) => setRiskFilter(event.target.value as typeof riskFilter)}
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
                 >
-                  {sortOrder === "asc" ? "Ascending" : "Descending"}
-                </button>
-              </div>
+                  <option value="all">All</option>
+                  <option value="safe">Safe</option>
+                  <option value="risky">Bit Risky</option>
+                  <option value="fishy">Fishy</option>
+                </select>
+              </label>
+
+              <label className="xl:col-span-1 space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Sort</span>
+                <div className="flex gap-2">
+                  <select
+                    value={sortBy}
+                    onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
+                    className="w-full rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                  >
+                    <option value="time">Time</option>
+                    <option value="txn_id">Transaction ID</option>
+                    <option value="amount">Amount</option>
+                    <option value="fraud_score">Fraud Score</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setSortOrder((current) => (current === "asc" ? "desc" : "asc"))}
+                    className="shrink-0 rounded-xl border border-white/20 bg-slate-900/75 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800/90"
+                    title="Toggle sort order"
+                  >
+                    {sortOrder === "asc" ? "Asc" : "Desc"}
+                  </button>
+                </div>
+              </label>
+            </div>
+
+            <div className="text-xs text-slate-400">
+              Showing {filteredRows.length} of {rows.length} transactions
             </div>
 
             <div className="overflow-x-auto rounded-2xl border border-white/10">
-              <table className="w-full min-w-[840px] text-sm">
+              <table className="w-full min-w-[980px] text-sm">
                 <thead className="bg-slate-900/85 text-slate-300">
                   <tr>
-                    <th className="text-left px-4 py-3 font-medium">User ID</th>
+                    <th className="text-left px-4 py-3 font-medium">Transaction ID</th>
                     <th className="text-left px-4 py-3 font-medium">Username</th>
-                    <th className="text-left px-4 py-3 font-medium">Transactions</th>
-                    <th className="text-left px-4 py-3 font-medium">Total Amount</th>
-                    <th className="text-left px-4 py-3 font-medium">Avg Score</th>
-                    <th className="text-left px-4 py-3 font-medium">Latest Location</th>
-                    <th className="text-left px-4 py-3 font-medium">Latest Time</th>
-                    <th className="text-left px-4 py-3 font-medium">Risk</th>
+                    <th className="text-left px-4 py-3 font-medium">Amount</th>
+                    <th className="text-left px-4 py-3 font-medium">Fraud Score</th>
+                    <th className="text-left px-4 py-3 font-medium">Location</th>
+                    <th className="text-left px-4 py-3 font-medium">Time</th>
+                    <th className="text-left px-4 py-3 font-medium">Decision</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {userRows.map((item) => {
-                    const riskClasses =
-                      item.risk === "Fishy"
-                        ? "text-rose-100 bg-rose-500/15 border-rose-400/60"
-                        : item.risk === "Bit Risky"
-                        ? "text-amber-100 bg-amber-500/15 border-amber-400/60"
-                        : "text-emerald-100 bg-emerald-500/15 border-emerald-400/60";
-
-                    return (
-                      <tr key={item.userId} className="border-t border-white/5 hover:bg-white/5">
-                        <td className="px-4 py-3 text-slate-300">{item.userId}</td>
-                        <td className="px-4 py-3 text-slate-100 font-medium">{item.username}</td>
-                        <td className="px-4 py-3 text-slate-300">{item.transactions}</td>
-                        <td className="px-4 py-3 text-emerald-300">
-                          {new Intl.NumberFormat("en-IN", {
-                            style: "currency",
-                            currency: "INR",
-                            maximumFractionDigits: 0,
-                          }).format(item.totalAmount)}
-                        </td>
-                        <td className="px-4 py-3 text-slate-200">{item.avgScore.toFixed(1)}</td>
-                        <td className="px-4 py-3 text-slate-300">{item.latestLocation}</td>
-                        <td className="px-4 py-3 text-slate-400">
-                          {new Date(item.latestTime).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={cn("inline-flex rounded-full border px-2 py-1 text-xs", riskClasses)}>
-                            {item.risk}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {filteredRows.map((row) => (
+                    <tr
+                      key={row.txn_id}
+                      className="border-t border-white/5 hover:bg-white/5 cursor-pointer"
+                      onClick={() => setActiveTransaction(row)}
+                    >
+                      <td className="px-4 py-3 text-slate-100 font-semibold tracking-[0.06em] uppercase">{row.txn_id}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col leading-tight">
+                          <span className="text-slate-100 font-medium">{row.username || row.user_id}</span>
+                          <span className="text-xs text-slate-400">{row.user_id}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-emerald-300 font-medium">
+                        {new Intl.NumberFormat("en-IN", {
+                          style: "currency",
+                          currency: "INR",
+                          maximumFractionDigits: 0,
+                        }).format(row.amount)}
+                      </td>
+                      <td className="px-4 py-3 text-slate-200">{row.fraud_score}</td>
+                      <td className="px-4 py-3 text-slate-300">{row.location}</td>
+                      <td className="px-4 py-3 text-slate-400">
+                        {new Date(row.timestamp).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cn(
+                            "inline-flex rounded-full border px-2 py-1 text-xs",
+                            row.decision === "BLOCK"
+                              ? "text-rose-100 bg-rose-500/15 border-rose-400/60"
+                              : row.decision === "REVIEW"
+                              ? "text-amber-100 bg-amber-500/15 border-amber-400/60"
+                              : "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
+                          )}
+                        >
+                          {row.decision}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredRows.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                        No transactions matched your current filters.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
         </div>
       </div>
+
+      {activeTransaction && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm p-4 md:p-8 overflow-y-auto">
+          <div className="mx-auto max-w-3xl rounded-2xl border border-white/15 bg-slate-950/95 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+              <h3 className="text-lg md:text-xl font-semibold tracking-[0.05em]">
+                {activeTransaction.txn_id} - DETAILED ANALYSIS
+              </h3>
+              <button
+                type="button"
+                onClick={() => setActiveTransaction(null)}
+                className="rounded-full border border-white/20 px-3 py-1 text-sm text-slate-300 hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-5 p-5 text-sm">
+              <div className="grid gap-2 text-slate-200">
+                <div>User: {activeTransaction.username} ({activeTransaction.user_id})</div>
+                <div>
+                  Amount: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(activeTransaction.amount)}
+                </div>
+                <div>Merchant: {activeTransaction.merchant_name}</div>
+                <div>Time: {new Date(activeTransaction.timestamp).toLocaleString()}</div>
+                <div>
+                  Device: {activeUserMeta?.trustedDeviceCount ? `Trusted (${activeUserMeta.trustedDeviceCount})` : "UNKNOWN"} ⚠️
+                </div>
+                <div>
+                  Location: {activeTransaction.location} (usual: {activeUserMeta?.usualCity || "Unknown"})
+                </div>
+              </div>
+
+              <div className="border-t border-white/10 pt-4 space-y-3">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Fraud Score Breakdown</div>
+                <AnalysisScoreRow label="ATO Score" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 16))} />
+                <AnalysisScoreRow label="Amount Anomaly" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 3))} />
+                <AnalysisScoreRow label="Low & Slow" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 32))} />
+                <AnalysisScoreRow label="Velocity" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 50))} />
+                <AnalysisScoreRow label="Fraud Ring" score={Math.max(0, Math.round(activeTransaction.fraud_score * 0.05))} />
+                <div className="h-px bg-white/10" />
+                <AnalysisScoreRow label="FINAL SCORE" score={activeTransaction.fraud_score} emphasize />
+              </div>
+
+              <div className="border-t border-white/10 pt-4 space-y-2">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Why Flagged (LLM Generated)</div>
+                <p className="text-slate-200 leading-6">
+                  "Critical: Transaction of {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(activeTransaction.amount)} from {activeUserMeta?.trustedDeviceCount ? "a known" : "an unrecognized"} device in {activeTransaction.location} at unusual time. Pattern is consistent with account takeover risk. Recommend immediate review and temporary freeze."
+                </p>
+              </div>
+
+              <div className="border-t border-white/10 pt-4 space-y-3">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Analyst Actions</div>
+                <div className="flex flex-wrap gap-2">
+                  <button className="rounded-full border border-emerald-400/60 px-3 py-1.5 text-emerald-200 hover:bg-emerald-500/10">✅ Confirm Fraud</button>
+                  <button className="rounded-full border border-rose-400/60 px-3 py-1.5 text-rose-200 hover:bg-rose-500/10">❌ False Positive</button>
+                  <button className="rounded-full border border-amber-400/60 px-3 py-1.5 text-amber-200 hover:bg-amber-500/10">🔒 Freeze Account</button>
+                  <button className="rounded-full border border-cyan-400/60 px-3 py-1.5 text-cyan-200 hover:bg-cyan-500/10">📱 Call User</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+function AnalysisScoreRow({
+  label,
+  score,
+  emphasize = false,
+}: {
+  label: string;
+  score: number;
+  emphasize?: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-[140px_minmax(0,1fr)_70px] items-center gap-3 text-sm">
+      <span className={cn("text-slate-300", emphasize && "text-slate-100 font-semibold")}>{label}</span>
+      <div className="h-2 rounded-full border border-slate-700/80 bg-slate-900 overflow-hidden">
+        <div
+          className={cn(
+            "h-full",
+            emphasize
+              ? "bg-gradient-to-r from-rose-500 to-amber-400"
+              : "bg-gradient-to-r from-indigo-400 to-cyan-300"
+          )}
+          style={{ width: `${score}%` }}
+        />
+      </div>
+      <span className={cn("text-right text-slate-300", emphasize && "text-slate-100 font-semibold")}>
+        {String(score).padStart(2, "0")}/100
+      </span>
+    </div>
   );
 }
 
@@ -1012,6 +1054,7 @@ function createSyntheticTransaction(currentRows: LiveTransaction[]): LiveTransac
     username: name,
     amount: Math.floor(200 + Math.random() * 90000),
     fraud_score: score,
+    decision: score >= 70 ? "BLOCK" : score >= 40 ? "REVIEW" : "APPROVE",
     merchant_name: pick(merchants),
     timestamp: new Date().toISOString(),
     location: pick(locations),
@@ -1451,9 +1494,13 @@ function FraudRingSection() {
 }
 
 function UsersSection() {
-  const [query, setQuery] = useState("");
   const [users, setUsers] = useState<UserSummary[]>([]);
+  const [searchText, setSearchText] = useState("");
+  const [riskFilter, setRiskFilter] = useState<"all" | "high" | "medium" | "low">("all");
+  const [cityFilter, setCityFilter] = useState("all");
+  const [sortBy, setSortBy] = useState<"name" | "member_since" | "avg_txn" | "trusted_devices">("name");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profile, setProfile] = useState<UserProfileResponseApi | null>(null);
 
   useEffect(() => {
@@ -1462,9 +1509,8 @@ function UsersSection() {
     async function loadUsers() {
       try {
         const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-        const search = encodeURIComponent(query.trim());
         const response = await fetch(
-          `${baseUrl}/api/users/search?query=${search}&limit=30`,
+          `${baseUrl}/api/users/search?query=&limit=200`,
           { signal: controller.signal }
         );
 
@@ -1484,16 +1530,13 @@ function UsersSection() {
 
     void loadUsers();
     return () => controller.abort();
-  }, [query]);
+  }, []);
 
   useEffect(() => {
     if (users.length === 0) {
       setSelectedUserId(null);
+      setIsProfileOpen(false);
       return;
-    }
-
-    if (!selectedUserId || !users.some((user) => user.user_id === selectedUserId)) {
-      setSelectedUserId(users[0].user_id);
     }
   }, [users, selectedUserId]);
 
@@ -1529,154 +1572,428 @@ function UsersSection() {
     void loadProfile();
     return () => controller.abort();
   }, [selectedUserId]);
+    const allCities = useMemo(() => {
+      const citySet = new Set(users.map((user) => user.city).filter(Boolean));
+      return Array.from(citySet).sort((a, b) => a.localeCompare(b));
+    }, [users]);
 
-  const selectedUser = users.find((user) => user.user_id === selectedUserId) ?? null;
+    const filteredUsers = useMemo(() => {
+      const query = searchText.trim().toLowerCase();
+
+      return users
+        .filter((user) => {
+          const normalizedRisk = user.risk_label.toLowerCase();
+          if (riskFilter === "high" && !normalizedRisk.includes("high")) {
+            return false;
+          }
+          if (riskFilter === "medium" && !normalizedRisk.includes("medium")) {
+            return false;
+          }
+          if (riskFilter === "low" && !normalizedRisk.includes("low")) {
+            return false;
+          }
+
+          if (cityFilter !== "all" && user.city !== cityFilter) {
+            return false;
+          }
+
+          if (!query) {
+            return true;
+          }
+
+          return [user.user_id, user.name, user.city, user.risk_label]
+            .join(" ")
+            .toLowerCase()
+            .includes(query);
+        })
+        .sort((a, b) => {
+          if (sortBy === "name") {
+            return a.name.localeCompare(b.name);
+          }
+          if (sortBy === "avg_txn") {
+            return b.avg_txn_per_day - a.avg_txn_per_day;
+          }
+          if (sortBy === "trusted_devices") {
+            return b.trusted_devices - a.trusted_devices;
+          }
+          return Date.parse(b.member_since) - Date.parse(a.member_since);
+        });
+    }, [users, searchText, riskFilter, cityFilter, sortBy]);
+
+    const selectedUser = users.find((user) => user.user_id === selectedUserId) ?? null;
+
+    const topMetrics = useMemo(() => {
+      const scoped = filteredUsers;
+      const total = scoped.length;
+      const high = scoped.filter((user) => user.risk_label.toLowerCase().includes("high")).length;
+      const medium = scoped.filter((user) => user.risk_label.toLowerCase().includes("medium")).length;
+      const avgDaily =
+        total > 0
+          ? scoped.reduce((sum, user) => sum + user.avg_txn_per_day, 0) / total
+          : 0;
+      const avgTrusted =
+        total > 0
+          ? scoped.reduce((sum, user) => sum + user.trusted_devices, 0) / total
+          : 0;
+      const cities = new Set(scoped.map((user) => user.city).filter(Boolean)).size;
+
+      return { total, high, medium, avgDaily, avgTrusted, cities };
+    }, [filteredUsers]);
+
+    const transactionTrendData = useMemo(() => {
+      if (!profile) {
+        return [] as Array<{ point: string; amount: number; score: number }>;
+      }
+
+      return [...profile.recent_transactions]
+        .reverse()
+        .map((txn, index) => ({
+          point: `T${index + 1}`,
+          amount: txn.amount,
+          score: txn.fraud_score,
+        }));
+    }, [profile]);
+
+    const loginBarData = useMemo(() => {
+      if (!profile) {
+        return [
+          { label: "Success", count: 0 },
+          { label: "Failed", count: 0 },
+        ];
+      }
+
+      const success = profile.login_history.filter((item) => item.success).length;
+      const failed = profile.login_history.length - success;
+
+      return [
+        { label: "Success", count: success },
+        { label: "Failed", count: failed },
+      ];
+    }, [profile]);
 
   return (
     <section id="users" className="space-y-10">
       <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto space-y-6">
-        <div className="grid gap-4 lg:grid-cols-[minmax(360px,0.95fr)_minmax(0,1.05fr)] items-start">
-          <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
-            <div className="flex items-center gap-2">
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search user by ID, name, city"
-                className="w-full rounded-xl bg-slate-900/80 border border-slate-700/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-              />
+          <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 space-y-4">
+            <div className="text-sm font-semibold tracking-wide text-slate-100">Users Overview</div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Users</div>
+                <div className="text-2xl font-semibold text-slate-100">{topMetrics.total}</div>
+            </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">High Risk</div>
+                <div className="text-2xl font-semibold text-rose-200">{topMetrics.high}</div>
+            </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Medium Risk</div>
+                <div className="text-2xl font-semibold text-amber-200">{topMetrics.medium}</div>
+            </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Avg Daily Txn</div>
+                <div className="text-2xl font-semibold text-cyan-200">{topMetrics.avgDaily.toFixed(1)}</div>
+            </div>
+              <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">City Spread</div>
+                <div className="text-2xl font-semibold text-indigo-200">{topMetrics.cities}</div>
+              </div>
             </div>
 
-            {selectedUser && (
-              <div className="rounded-2xl border border-white/20 bg-slate-950/75 p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-lg font-medium text-slate-100">
-                    <UserRound className="h-4 w-4 text-indigo-300" />
-                    {selectedUser.name}
-                  </div>
-                  <span
-                    className={cn(
-                      "inline-flex rounded-full border px-2 py-1 text-xs",
-                      selectedUser.risk_label.includes("HIGH")
-                        ? "text-rose-100 bg-rose-500/15 border-rose-400/60"
-                        : selectedUser.risk_label.includes("MEDIUM")
-                        ? "text-amber-100 bg-amber-500/15 border-amber-400/60"
-                        : "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
-                    )}
-                  >
-                    {selectedUser.risk_label}
-                  </span>
-                </div>
-                <div className="text-slate-300 text-sm">
-                  {selectedUser.user_id} • {selectedUser.city} • Member since {new Date(selectedUser.member_since).toLocaleDateString()}
-                </div>
-                <div className="pt-1 text-sm text-slate-200 space-y-1">
-                  <div>Behavioral Baseline</div>
-                  <div>Avg Transaction: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format((profile?.recent_transactions?.[0]?.amount ?? 650))}</div>
-                  <div>
-                    Usual Time: {selectedUser.usual_login_hour}:00 - {(selectedUser.usual_login_hour + 2) % 24}:00
-                  </div>
-                  <div>Trusted Devices: {selectedUser.trusted_devices}</div>
-                  <div>Daily Avg Txns: {selectedUser.avg_txn_per_day.toFixed(1)}</div>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
-              {users.map((user) => (
-                <button
-                  key={user.user_id}
-                  type="button"
-                  onClick={() => setSelectedUserId(user.user_id)}
-                  className={cn(
-                    "w-full text-left rounded-xl border px-3 py-2 transition-all",
-                    selectedUserId === user.user_id
-                      ? "border-indigo-400/70 bg-indigo-500/10"
-                      : "border-slate-700/80 bg-slate-900/70 hover:border-indigo-400/40"
-                  )}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <label className="space-y-1 xl:col-span-2">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Search Users</span>
+                <input
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  placeholder="Search by name, id, city, risk"
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Risk Filter</span>
+                <select
+                  value={riskFilter}
+                  onChange={(event) => setRiskFilter(event.target.value as typeof riskFilter)}
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-100 font-medium">{user.name}</span>
-                    <span className="text-xs text-slate-400">{user.user_id}</span>
-                  </div>
-                  <div className="text-xs text-slate-400 mt-0.5">{user.city}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="rounded-3xl bg-slate-950/80 border border-white/10 p-5 space-y-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Transaction History</div>
-              <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full min-w-[640px] text-sm">
-                  <thead className="bg-slate-900/80 text-slate-300">
-                    <tr>
-                      <th className="text-left px-3 py-2">Txn ID</th>
-                      <th className="text-left px-3 py-2">Amount</th>
-                      <th className="text-left px-3 py-2">Merchant</th>
-                      <th className="text-left px-3 py-2">Score</th>
-                      <th className="text-left px-3 py-2">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(profile?.recent_transactions ?? []).map((txn) => (
-                      <tr key={txn.txn_id} className="border-t border-white/5">
-                        <td className="px-3 py-2 text-slate-100 font-medium">{txn.txn_id}</td>
-                        <td className="px-3 py-2 text-emerald-300">
-                          {new Intl.NumberFormat("en-IN", {
-                            style: "currency",
-                            currency: "INR",
-                            maximumFractionDigits: 0,
-                          }).format(txn.amount)}
-                        </td>
-                        <td className="px-3 py-2 text-slate-300">{txn.merchant_name}</td>
-                        <td className="px-3 py-2 text-slate-300">{txn.fraud_score}</td>
-                        <td className="px-3 py-2 text-slate-400">{new Date(txn.timestamp).toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  <option value="all">All</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">City</span>
+                <select
+                  value={cityFilter}
+                  onChange={(event) => setCityFilter(event.target.value)}
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                >
+                  <option value="all">All Cities</option>
+                  {allCities.map((city) => (
+                    <option key={city} value={city}>{city}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Sort</span>
+                <select
+                  value={sortBy}
+                  onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
+                  className="w-full rounded-xl border border-white/15 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                >
+                  <option value="name">Name</option>
+                  <option value="member_since">Newest Member</option>
+                  <option value="avg_txn">Avg Daily Txn</option>
+                  <option value="trusted_devices">Trusted Devices</option>
+                </select>
+              </label>
             </div>
 
-            <div className="rounded-3xl bg-slate-950/80 border border-white/10 p-5 space-y-3">
-              <div className="text-xs uppercase tracking-[0.14em] text-slate-400">Login History</div>
-              <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full min-w-[520px] text-sm">
-                  <thead className="bg-slate-900/80 text-slate-300">
-                    <tr>
-                      <th className="text-left px-3 py-2">Time</th>
-                      <th className="text-left px-3 py-2">Host (IP)</th>
-                      <th className="text-left px-3 py-2">Status</th>
-                      <th className="text-left px-3 py-2">Reason</th>
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[920px] text-sm">
+                <thead className="bg-slate-900/80 text-slate-300">
+                  <tr>
+                    <th className="text-left px-3 py-2">User</th>
+                    <th className="text-left px-3 py-2">User ID</th>
+                    <th className="text-left px-3 py-2">City</th>
+                    <th className="text-left px-3 py-2">Risk</th>
+                    <th className="text-left px-3 py-2">Avg Daily Txn</th>
+                    <th className="text-left px-3 py-2">Trusted Devices</th>
+                    <th className="text-left px-3 py-2">Member Since</th>
+                    <th className="text-left px-3 py-2">History</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.map((user) => (
+                    <tr key={user.user_id} className="border-t border-white/5 hover:bg-white/5">
+                      <td className="px-3 py-2 text-slate-100 font-medium">{user.name}</td>
+                      <td className="px-3 py-2 text-slate-300">{user.user_id}</td>
+                      <td className="px-3 py-2 text-slate-300">{user.city}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={cn(
+                            "inline-flex rounded-full border px-2 py-1 text-xs",
+                            user.risk_label.toLowerCase().includes("high")
+                              ? "text-rose-100 bg-rose-500/15 border-rose-400/60"
+                              : user.risk_label.toLowerCase().includes("medium")
+                              ? "text-amber-100 bg-amber-500/15 border-amber-400/60"
+                              : "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
+                          )}
+                        >
+                          {user.risk_label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-slate-300">{user.avg_txn_per_day.toFixed(1)}</td>
+                      <td className="px-3 py-2 text-slate-300">{user.trusted_devices}</td>
+                      <td className="px-3 py-2 text-slate-400">{new Date(user.member_since).toLocaleDateString()}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedUserId(user.user_id);
+                            setIsProfileOpen(true);
+                          }}
+                          className="rounded-lg border border-indigo-400/60 px-3 py-1.5 text-xs text-indigo-100 hover:bg-indigo-500/10"
+                        >
+                          View Card
+                        </button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {(profile?.login_history ?? []).map((item, index) => (
-                      <tr key={`${item.ip_address}-${item.timestamp}-${index}`} className="border-t border-white/5">
-                        <td className="px-3 py-2 text-slate-400">{new Date(item.timestamp).toLocaleString()}</td>
-                        <td className="px-3 py-2 text-slate-300">{item.ip_address}</td>
-                        <td className="px-3 py-2">
-                          <span
-                            className={cn(
-                              "inline-flex rounded-full border px-2 py-1 text-xs",
-                              item.success
-                                ? "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
-                                : "text-rose-100 bg-rose-500/15 border-rose-400/60"
-                            )}
-                          >
-                            {item.success ? "Success" : "Failed"}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-slate-400">{item.failure_reason || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                  ))}
+                  {filteredUsers.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="px-3 py-8 text-center text-slate-400">
+                        No users matched your filters.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
           </div>
         </div>
+
+          {isProfileOpen && selectedUser && (
+            <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm p-4 md:p-8 overflow-y-auto">
+              <div className="mx-auto max-w-6xl rounded-3xl border border-white/15 bg-slate-950/95 shadow-2xl p-5 space-y-5">
+                <div className="flex items-center justify-between gap-4 border-b border-white/10 pb-4">
+                  <div>
+                    <div className="text-lg md:text-xl font-semibold text-slate-100 flex items-center gap-2">
+                      <UserRound className="h-5 w-5 text-indigo-300" />
+                      {selectedUser.name} - User History Card
+                    </div>
+                    <div className="text-sm text-slate-400 mt-1">
+                      {selectedUser.user_id} · {selectedUser.city} · Member since {new Date(selectedUser.member_since).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsProfileOpen(false)}
+                    className="rounded-full border border-white/20 px-3 py-1 text-sm text-slate-300 hover:bg-white/10"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-white/10">
+                  <table className="w-full min-w-[760px] text-sm">
+                    <thead className="bg-slate-900/80 text-slate-300">
+                      <tr>
+                        <th className="text-left px-3 py-2">Field</th>
+                        <th className="text-left px-3 py-2">Value</th>
+                        <th className="text-left px-3 py-2">Field</th>
+                        <th className="text-left px-3 py-2">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-t border-white/5">
+                        <td className="px-3 py-2 text-slate-400">Risk Label</td>
+                        <td className="px-3 py-2 text-slate-100">{selectedUser.risk_label}</td>
+                        <td className="px-3 py-2 text-slate-400">Avg Txn / Day</td>
+                        <td className="px-3 py-2 text-slate-100">{selectedUser.avg_txn_per_day.toFixed(1)}</td>
+                      </tr>
+                      <tr className="border-t border-white/5">
+                        <td className="px-3 py-2 text-slate-400">Trusted Devices</td>
+                        <td className="px-3 py-2 text-slate-100">{selectedUser.trusted_devices}</td>
+                        <td className="px-3 py-2 text-slate-400">Usual Login Hour</td>
+                        <td className="px-3 py-2 text-slate-100">{selectedUser.usual_login_hour}:00</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4 space-y-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Transaction Amount Trend</div>
+                    <div className="h-[220px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={transactionTrendData}>
+                          <CartesianGrid stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3" />
+                          <XAxis dataKey="point" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                          <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                          <RechartsTooltip
+                            contentStyle={{
+                              background: "rgba(15, 23, 42, 0.96)",
+                              border: "1px solid rgba(148,163,184,0.25)",
+                              borderRadius: "10px",
+                              color: "#e2e8f0",
+                            }}
+                          />
+                          <Line type="monotone" dataKey="amount" stroke="#22d3ee" strokeWidth={2.6} dot={{ r: 3 }} />
+                          <Line type="monotone" dataKey="score" stroke="#f87171" strokeWidth={2.2} dot={{ r: 2 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4 space-y-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Login Outcome Distribution</div>
+                    <div className="h-[220px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={loginBarData}>
+                          <CartesianGrid stroke="rgba(148,163,184,0.2)" strokeDasharray="3 3" />
+                          <XAxis dataKey="label" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                          <YAxis allowDecimals={false} stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                          <RechartsTooltip
+                            contentStyle={{
+                              background: "rgba(15, 23, 42, 0.96)",
+                              border: "1px solid rgba(148,163,184,0.25)",
+                              borderRadius: "10px",
+                              color: "#e2e8f0",
+                            }}
+                          />
+                          <Bar dataKey="count" radius={[8, 8, 0, 0]}>
+                            {loginBarData.map((entry, index) => (
+                              <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4 space-y-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Recent Transactions</div>
+                    <div className="overflow-x-auto rounded-xl border border-white/10">
+                      <table className="w-full min-w-[560px] text-sm">
+                        <thead className="bg-slate-900/80 text-slate-300">
+                          <tr>
+                            <th className="text-left px-3 py-2">Txn ID</th>
+                            <th className="text-left px-3 py-2">Amount</th>
+                            <th className="text-left px-3 py-2">Merchant</th>
+                            <th className="text-left px-3 py-2">Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(profile?.recent_transactions ?? []).map((txn) => (
+                            <tr key={txn.txn_id} className="border-t border-white/5">
+                              <td className="px-3 py-2 text-slate-100">{txn.txn_id}</td>
+                              <td className="px-3 py-2 text-emerald-300">
+                                {new Intl.NumberFormat("en-IN", {
+                                  style: "currency",
+                                  currency: "INR",
+                                  maximumFractionDigits: 0,
+                                }).format(txn.amount)}
+                              </td>
+                              <td className="px-3 py-2 text-slate-300">{txn.merchant_name}</td>
+                              <td className="px-3 py-2 text-slate-300">{txn.fraud_score}</td>
+                            </tr>
+                          ))}
+                          {(profile?.recent_transactions?.length ?? 0) === 0 && (
+                            <tr>
+                              <td colSpan={4} className="px-3 py-6 text-center text-slate-400">No transactions found for this user.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4 space-y-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Login History</div>
+                    <div className="overflow-x-auto rounded-xl border border-white/10">
+                      <table className="w-full min-w-[560px] text-sm">
+                        <thead className="bg-slate-900/80 text-slate-300">
+                          <tr>
+                            <th className="text-left px-3 py-2">Time</th>
+                            <th className="text-left px-3 py-2">IP</th>
+                            <th className="text-left px-3 py-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(profile?.login_history ?? []).map((item, index) => (
+                            <tr key={`${item.ip_address}-${item.timestamp}-${index}`} className="border-t border-white/5">
+                              <td className="px-3 py-2 text-slate-400">{new Date(item.timestamp).toLocaleString()}</td>
+                              <td className="px-3 py-2 text-slate-300">{item.ip_address}</td>
+                              <td className="px-3 py-2">
+                                <span
+                                  className={cn(
+                                    "inline-flex rounded-full border px-2 py-1 text-xs",
+                                    item.success
+                                      ? "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
+                                      : "text-rose-100 bg-rose-500/15 border-rose-400/60"
+                                  )}
+                                >
+                                  {item.success ? "Success" : "Failed"}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                          {(profile?.login_history?.length ?? 0) === 0 && (
+                            <tr>
+                              <td colSpan={3} className="px-3 py-6 text-center text-slate-400">No login history found for this user.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
       </div>
     </section>
   );
@@ -2072,64 +2389,139 @@ function LocationSection() {
   const cityStats = [
     {
       city: "Mumbai",
-      transactions: 2104,
       fraud: 12,
       tone: "danger" as const,
       location: [19.076, 72.8777] as [number, number],
     },
     {
       city: "Delhi",
-      transactions: 1847,
       fraud: 8,
       tone: "warning" as const,
       location: [28.6139, 77.209] as [number, number],
     },
     {
       city: "Hyderabad",
-      transactions: 923,
       fraud: 19,
       tone: "danger" as const,
       location: [17.385, 78.4867] as [number, number],
     },
     {
       city: "Bangalore",
-      transactions: 1203,
       fraud: 3,
       tone: "success" as const,
       location: [12.9716, 77.5946] as [number, number],
     },
   ];
 
-  const mapMarkers = cityStats.map((item) => ({
-    id: item.city,
-    location: item.location,
-    visitors: item.transactions,
-    trend: item.fraud,
-    fraud: item.fraud,
-    riskTone: item.tone,
+  const globeMarkers = cityStats.map((city) => ({
+    id: city.city,
+    location: city.location,
+    visitors: city.fraud,
+    trend: city.fraud,
+    fraud: city.fraud,
+    riskTone: city.tone,
   }));
 
   return (
     <section id="location" className="space-y-10">
-      <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto flex justify-center">
-        <div className="w-full max-w-3xl space-y-4">
+      <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto">
+        <div className="space-y-5">
           <SectionTitle
             icon={Globe2}
-            label="India Transaction Map"
-            description="City-wise transaction and fraud snapshot from live feed."
+            label="Fraud Heat Map (2D)"
+            description="Real map heat layer for fraudulent transactions, with globe retained below."
           />
-          <div className="space-y-5">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Bottom — Geographic Map</span>
-              <span>Drag to explore city markers</span>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-5">
+            <FraudHeatMapMap data={cityStats} />
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-5">
+            <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
+              <span>Globe View</span>
+              <span>Retained as requested</span>
             </div>
             <div className="w-full max-w-md mx-auto">
-              <GlobeAnalytics markers={mapMarkers} className="w-full" />
+              <GlobeAnalytics markers={globeMarkers} speed={0} className="w-full" />
             </div>
           </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function FraudHeatMapMap({
+  data,
+}: {
+  data: Array<{
+    city: string;
+    fraud: number;
+    tone: "danger" | "warning" | "success";
+    location: [number, number];
+  }>;
+}) {
+  const indiaCenter: [number, number] = [22.9734, 78.6569];
+  const maxFraud = Math.max(1, ...data.map((city) => city.fraud));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between text-xs text-slate-400">
+        <span>Fraud-only heat intensity</span>
+        <span>Real map tiles</span>
+      </div>
+
+      <div className="rounded-2xl border border-white/10 overflow-hidden">
+        <MapContainer center={indiaCenter} zoom={5} className="h-[520px] w-full" scrollWheelZoom>
+          <TileLayer
+            attribution='&copy; OpenStreetMap contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+
+          {data.map((city) => {
+            const intensity = city.fraud / maxFraud;
+            const color =
+              intensity >= 0.7 ? "#f43f5e" : intensity >= 0.4 ? "#f59e0b" : "#22c55e";
+            const ringScale = 0.65 + intensity;
+
+            return [
+              <Circle
+                key={`${city.city}-outer`}
+                center={city.location}
+                radius={98000 * ringScale}
+                pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.14 + intensity * 0.08 }}
+              />,
+              <Circle
+                key={`${city.city}-mid`}
+                center={city.location}
+                radius={64000 * ringScale}
+                pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.22 + intensity * 0.1 }}
+              />,
+              <Circle
+                key={`${city.city}-inner`}
+                center={city.location}
+                radius={32000 * ringScale}
+                pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.34 + intensity * 0.14 }}
+              />,
+              <CircleMarker
+                key={`${city.city}-pin`}
+                center={city.location}
+                radius={5}
+                pathOptions={{ color: "#ec4899", fillColor: "#ec4899", fillOpacity: 0.95, weight: 1 }}
+              >
+                <Popup>
+                  <div className="text-sm">
+                    <div className="font-semibold">{city.city}</div>
+                    <div>Fraud cases: {city.fraud}</div>
+                  </div>
+                </Popup>
+              </CircleMarker>,
+            ];
+          })}
+        </MapContainer>
+      </div>
+
+    </div>
   );
 }
 
