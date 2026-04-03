@@ -1,12 +1,21 @@
-import os
+from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+from database.mongodb import init_collections
+from routes.auth import router as auth_router
+from routes.dashboard import router as dashboard_router
+from routes.transactions import router as transaction_router
 
-app = FastAPI(title=os.getenv("APP_NAME", "Simple FastAPI"), version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await init_collections()
+    yield
+
+
+app = FastAPI(title="Financial Fraud Detection System", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,12 +25,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(transaction_router, prefix="/api", tags=["transactions"])
+app.include_router(auth_router, prefix="/api", tags=["auth"])
+app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
+
 
 @app.get("/")
-def home() -> dict[str, str]:
-    return {"message": "Simple FastAPI backend running"}
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str]:
+    return {"message": "Financial Fraud Detection API is running"}
