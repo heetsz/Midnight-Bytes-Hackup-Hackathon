@@ -47,6 +47,7 @@ class UserProfileResponse(BaseModel):
     recent_transactions: list[dict[str, Any]]
     weekly_stats: list[dict[str, Any]]
     open_alerts: list[dict[str, Any]]
+    login_history: list[dict[str, Any]]
 
 
 class DashboardStatsResponse(BaseModel):
@@ -55,4 +56,56 @@ class DashboardStatsResponse(BaseModel):
     fraud_by_type: list[dict[str, Any]]
     top_high_risk_users: list[dict[str, Any]]
     alerts_pending_resolution: int
+    generated_at: datetime
+
+
+class LiveTransactionItem(BaseModel):
+    txn_id: str
+    user_id: str
+    username: str
+    amount: float
+    fraud_score: int
+    merchant_name: str
+    timestamp: datetime
+    location: str
+
+
+class LiveTransactionsResponse(BaseModel):
+    transactions: list[LiveTransactionItem]
+    generated_at: datetime
+
+
+class UserSummaryItem(BaseModel):
+    user_id: str
+    name: str
+    city: str
+    member_since: datetime
+    risk_label: str
+    avg_txn_per_day: float
+    trusted_devices: int
+    usual_login_hour: int
+
+
+class UserSearchResponse(BaseModel):
+    users: list[UserSummaryItem]
+    generated_at: datetime
+
+
+class FraudRingNode(BaseModel):
+    id: str
+    label: str
+    node_type: str
+    risk_score: int
+
+
+class FraudRingLink(BaseModel):
+    source: str
+    target: str
+    relation: str
+    confidence: float
+
+
+class FraudRingGraphResponse(BaseModel):
+    nodes: list[FraudRingNode]
+    links: list[FraudRingLink]
     generated_at: datetime

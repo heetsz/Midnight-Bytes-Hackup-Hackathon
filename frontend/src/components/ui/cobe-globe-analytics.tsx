@@ -9,6 +9,8 @@ interface AnalyticsMarker {
   location: [number, number];
   visitors: number;
   trend: number;
+  fraud?: number;
+  riskTone?: "danger" | "warning" | "success";
 }
 
 interface GlobeAnalyticsProps {
@@ -38,22 +40,11 @@ export function GlobeAnalytics({
   const thetaOffsetRef = useRef(0);
   const isPausedRef = useRef(false);
   const [data, setData] = useState(initialMarkers);
+  const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setData((prev) =>
-        prev.map((m) => ({
-          ...m,
-          visitors: m.visitors + Math.floor(Math.random() * 11) - 3,
-          trend: Math.max(
-            -20,
-            Math.min(20, m.trend + Math.floor(Math.random() * 5) - 2)
-          ),
-        }))
-      );
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    setData(initialMarkers);
+  }, [initialMarkers]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     pointerInteracting.current = { x: e.clientX, y: e.clientY };
@@ -182,40 +173,57 @@ export function GlobeAnalytics({
             translate: "-50% 0",
             marginBottom: 6,
             display: "flex",
-            alignItems: "baseline",
-            gap: "0.35rem",
-            padding: "0.3rem 0.5rem",
-            background: "rgba(0,0,0,0.85)",
-            borderRadius: 4,
-            pointerEvents: "none" as const,
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "auto" as const,
             whiteSpace: "nowrap" as const,
             opacity: `var(--cobe-visible-${m.id}, 0)`,
             filter: `blur(calc((1 - var(--cobe-visible-${m.id}, 0)) * 8px))`,
             transition: "opacity 0.3s, filter 0.3s",
           }}
+          onMouseEnter={() => setHoveredMarkerId(m.id)}
+          onMouseLeave={() => setHoveredMarkerId((prev) => (prev === m.id ? null : prev))}
         >
           <span
             style={{
-              fontFamily: "monospace",
-              fontSize: "0.85rem",
-              fontWeight: 600,
-              color: "#fff",
-              letterSpacing: "-0.02em",
+              width: "12px",
+              height: "12px",
+              borderRadius: "999px",
+              border: "1px solid rgba(255,255,255,0.25)",
+              boxShadow: "0 0 12px rgba(255,255,255,0.25)",
+              background:
+                m.riskTone === "danger"
+                  ? "#fb7185"
+                  : m.riskTone === "warning"
+                  ? "#fbbf24"
+                  : "#34d399",
             }}
-          >
-            {m.visitors}
-          </span>
-          <span
-            style={{
-              fontFamily: "monospace",
-              fontSize: "0.55rem",
-              fontWeight: 500,
-              letterSpacing: "0.02em",
-              color: m.trend >= 0 ? "#34d399" : "#f87171",
-            }}
-          >
-            {m.trend >= 0 ? "↑" : "↓"} {Math.abs(m.trend)}%
-          </span>
+          />
+
+          {hoveredMarkerId === m.id && (
+            <span
+              style={{
+                position: "absolute",
+                bottom: "16px",
+                left: "50%",
+                transform: "translateX(-50%)",
+                fontFamily: "monospace",
+                fontSize: "0.62rem",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.45rem",
+                padding: "0.35rem 0.55rem",
+                background: "rgba(0,0,0,0.9)",
+                border: "1px solid rgba(148,163,184,0.3)",
+                borderRadius: "6px",
+                color: "#e2e8f0",
+              }}
+            >
+              <span>{m.id}</span>
+              <span>{m.visitors.toLocaleString()} txns</span>
+              {typeof m.fraud === "number" && <span>{m.fraud} fraud</span>}
+            </span>
+          )}
         </div>
       ))}
     </div>

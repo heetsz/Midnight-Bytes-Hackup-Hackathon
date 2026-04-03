@@ -1,12 +1,16 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pymongo.errors import PyMongoError
 
 from database.mongodb import get_db
 from models.schemas import (
     FeedbackRequest,
+    LiveTransactionItem,
+    LiveTransactionsResponse,
+    UserSearchResponse,
+    UserSummaryItem,
     TransactionAnalyzeRequest,
     TransactionAnalyzeResponse,
     UserProfileResponse,
@@ -25,6 +29,137 @@ from services.telegram_service import send_fraud_alert
 from utils.explainability import get_risk_level, merge_explanations
 
 router = APIRouter()
+
+
+@router.get("/transactions/live", response_model=LiveTransactionsResponse)
+async def get_live_transactions(
+    limit: int = Query(default=15, ge=1, le=100),
+) -> LiveTransactionsResponse:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    try:
+        raw_transactions = await (
+            db.transactions.find(
+                {},
+                {
+                    "_id": 0,
+                    "txn_id": 1,
+                    "user_id": 1,
+                    "amount": 1,
+                    "fraud_score": 1,
+                    "merchant_name": 1,
+                    "timestamp": 1,
+                    "city": 1,
+                },
+            )
+            .sort("timestamp", -1)
+            .limit(limit)
+            .to_list(length=limit)
+        )
+
+        user_ids = [
+            str(item.get("user_id"))
+            for item in raw_transactions
+            if item.get("user_id") is not None
+        ]
+
+        users = await db.users.find(
+            {"user_id": {"$in": user_ids}},
+            {"_id": 0, "user_id": 1, "name": 1},
+        ).to_list(length=500)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed live transaction query: {exc}") from exc
+
+    name_map = {
+        str(user.get("user_id")): str(user.get("name", user.get("user_id", "Unknown")))
+        for user in users
+    }
+
+    transactions = [
+        LiveTransactionItem(
+            txn_id=str(item.get("txn_id", "-")),
+            user_id=str(item.get("user_id", "-")),
+            username=name_map.get(str(item.get("user_id", "")), str(item.get("user_id", "-"))),
+            amount=float(item.get("amount", 0.0)),
+            fraud_score=int(item.get("fraud_score", 0)),
+            merchant_name=str(item.get("merchant_name", "Unknown merchant")),
+            timestamp=item.get("timestamp", now),
+            location=str(item.get("city", "Unknown")),
+        )
+        for item in raw_transactions
+    ]
+
+    return LiveTransactionsResponse(transactions=transactions, generated_at=now)
+
+
+@router.get("/users/search", response_model=UserSearchResponse)
+async def search_users(
+    query: str = Query(default="", min_length=0, max_length=80),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> UserSearchResponse:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    filter_query: dict = {}
+    if query.strip():
+        filter_query = {
+            "$or": [
+                {"user_id": {"$regex": query, "$options": "i"}},
+                {"name": {"$regex": query, "$options": "i"}},
+                {"city": {"$regex": query, "$options": "i"}},
+            ]
+        }
+
+    try:
+        users = await db.users.find(filter_query, {"_id": 0}).limit(limit).to_list(length=limit)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed users search query: {exc}") from exc
+
+    user_items: list[UserSummaryItem] = []
+
+    for user in users:
+        user_id = str(user.get("user_id", ""))
+
+        try:
+            first_txn = await (
+                db.transactions.find({"user_id": user_id}, {"_id": 0, "timestamp": 1})
+                .sort("timestamp", 1)
+                .limit(1)
+                .to_list(length=1)
+            )
+        except PyMongoError:
+            first_txn = []
+
+        member_since = (
+            first_txn[0].get("timestamp") if first_txn and first_txn[0].get("timestamp") else now
+        )
+
+        risk_profile = user.get("risk_profile", {})
+        risk_score = int(risk_profile.get("risk_score", 0))
+        flags = risk_profile.get("flags", [])
+        risk_label = (
+            "HIGH RISK"
+            if risk_score >= 70 or len(flags) >= 2
+            else "MEDIUM RISK"
+            if risk_score >= 35 or len(flags) == 1
+            else "LOW RISK"
+        )
+
+        user_items.append(
+            UserSummaryItem(
+                user_id=user_id,
+                name=str(user.get("name", user_id)),
+                city=str(user.get("city", "Unknown")),
+                member_since=member_since,
+                risk_label=risk_label,
+                avg_txn_per_day=float(user.get("avg_txn_per_day", 0.0)),
+                trusted_devices=len(user.get("trusted_devices", [])),
+                usual_login_hour=int(user.get("usual_login_hour", 12)),
+            )
+        )
+
+    return UserSearchResponse(users=user_items, generated_at=now)
 
 
 @router.post("/transaction/analyze", response_model=TransactionAnalyzeResponse)
@@ -187,6 +322,12 @@ async def get_user_profile(user_id: str) -> UserProfileResponse:
         open_alerts = await db.fraud_alerts.find(
             {"user_id": user_id, "status": "PENDING"}, {"_id": 0}
         ).to_list(length=200)
+        login_history = await (
+            db.login_attempts.find({"user_id": user_id}, {"_id": 0})
+            .sort("timestamp", -1)
+            .limit(20)
+            .to_list(length=20)
+        )
     except PyMongoError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch profile data: {exc}") from exc
 
@@ -195,6 +336,7 @@ async def get_user_profile(user_id: str) -> UserProfileResponse:
         recent_transactions=transactions,
         weekly_stats=weekly_stats,
         open_alerts=open_alerts,
+        login_history=login_history,
     )
 
 
