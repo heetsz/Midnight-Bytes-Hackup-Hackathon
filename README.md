@@ -1,2 +1,1 @@
-# Midnight Bytes - Hackup Hackathon
 
