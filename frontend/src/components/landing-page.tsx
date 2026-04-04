@@ -4,8 +4,8 @@ import { GlobeAnalytics } from "@/components/ui/cobe-globe-analytics";
 import { LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from "react-leaflet";
+import * as Recharts from "recharts";
 import {
-  Bar,
   BarChart,
   CartesianGrid,
   Cell,
@@ -37,6 +37,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FloatingPaths } from "@/components/ui/background-paths";
+
+const RLMapContainer = MapContainer as any;
+const RLTileLayer = TileLayer as any;
+const RLCircle = Circle as any;
+const RLCircleMarker = CircleMarker as any;
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -258,13 +263,22 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
       : fallback;
 
   const total = Math.max(1, source.reduce((sum, item) => sum + item.count, 0));
+  const toPercent = (value: number) => Math.min(100, Math.max(0, (value / total) * 100));
+
   const chartData = source.slice(0, 6).map((item) => ({
     name: item.fraud_type,
     value: item.count,
-    percent: Math.round((item.count / total) * 100),
+    percent: Math.round(toPercent(item.count)),
   }));
 
-  const donutColors = ["#f87171", "#fb7185", "#fbbf24", "#38bdf8", "#34d399", "#a78bfa"];
+  const donutColors = [
+    "#ef4444",
+    "#f59e0b",
+    "#22c55e",
+    "#06b6d4",
+    "#3b82f6",
+    "#8b5cf6",
+  ];
 
   return (
     <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
@@ -285,7 +299,7 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                 paddingAngle={2}
                 stroke="rgba(2,6,23,0.8)"
                 labelLine={false}
-                label={({ percent, x, y }) => (
+                label={({ payload, x, y }) => (
                   <text
                     x={x}
                     y={y}
@@ -295,7 +309,7 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                     fontSize={12}
                     fontWeight={600}
                   >
-                    {`${Math.round((percent ?? 0) * 100)}%`}
+                    {`${Math.min(100, Math.max(0, Math.round(payload?.percent ?? 0)))}%`}
                   </text>
                 )}
               >
@@ -304,7 +318,6 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                 ))}
               </Pie>
               <RechartsTooltip
-                formatter={(value: number, name: string) => [`${value} cases`, name]}
                 contentStyle={{
                   background: "rgba(15, 23, 42, 0.95)",
                   border: "1px solid rgba(148,163,184,0.25)",
@@ -330,6 +343,7 @@ type LiveTransaction = {
   merchant_name: string;
   timestamp: string;
   location: string;
+  why_flagged?: string;
 };
 
 type LiveTransactionsResponse = {
@@ -507,13 +521,15 @@ function LiveTransactionsFeedSection() {
       return;
     }
 
+    const currentTransaction = activeTransaction!;
+
     const controller = new AbortController();
 
     async function loadUserMeta() {
       try {
         const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
         const response = await fetch(
-          `${baseUrl}/api/user/${activeTransaction.user_id}/profile`,
+          `${baseUrl}/api/user/${currentTransaction.user_id}/profile`,
           { signal: controller.signal }
         );
 
@@ -828,7 +844,14 @@ function LiveTransactionsFeedSection() {
               <div className="border-t border-white/10 pt-4 space-y-2">
                 <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Why Flagged (LLM Generated)</div>
                 <p className="text-slate-200 leading-6">
-                  "Critical: Transaction of {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(activeTransaction.amount)} from {activeUserMeta?.trustedDeviceCount ? "a known" : "an unrecognized"} device in {activeTransaction.location} at unusual time. Pattern is consistent with account takeover risk. Recommend immediate review and temporary freeze."
+                  {activeTransaction.why_flagged ||
+                    `Critical: Transaction of ${new Intl.NumberFormat("en-IN", {
+                      style: "currency",
+                      currency: "INR",
+                      maximumFractionDigits: 0,
+                    }).format(activeTransaction.amount)} from ${
+                      activeUserMeta?.trustedDeviceCount ? "a known" : "an unrecognized"
+                    } device in ${activeTransaction.location} at unusual time. Pattern is consistent with account takeover risk. Recommend immediate review and temporary freeze.`}
                 </p>
               </div>
 
@@ -1902,11 +1925,11 @@ function UsersSection() {
                               color: "#e2e8f0",
                             }}
                           />
-                          <Bar dataKey="count" radius={[8, 8, 0, 0]}>
+                          <Recharts.Bar dataKey="count" radius={[8, 8, 0, 0]}>
                             {loginBarData.map((entry, index) => (
                               <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
                             ))}
-                          </Bar>
+                          </Recharts.Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -2386,37 +2409,95 @@ function AnalyticsSection() {
 }
 
 function LocationSection() {
-  const cityStats = [
-    {
-      city: "Mumbai",
-      fraud: 12,
-      tone: "danger" as const,
-      location: [19.076, 72.8777] as [number, number],
-    },
-    {
-      city: "Delhi",
-      fraud: 8,
-      tone: "warning" as const,
-      location: [28.6139, 77.209] as [number, number],
-    },
-    {
-      city: "Hyderabad",
-      fraud: 19,
-      tone: "danger" as const,
-      location: [17.385, 78.4867] as [number, number],
-    },
-    {
-      city: "Bangalore",
-      fraud: 3,
-      tone: "success" as const,
-      location: [12.9716, 77.5946] as [number, number],
-    },
-  ];
+  const fallbackCityStats = useMemo(
+    () => [
+      {
+        city: "Mumbai",
+        fraud: 12,
+        transactions: 42,
+        tone: "danger" as const,
+        location: [19.076, 72.8777] as [number, number],
+      },
+      {
+        city: "Delhi",
+        fraud: 8,
+        transactions: 31,
+        tone: "warning" as const,
+        location: [28.6139, 77.209] as [number, number],
+      },
+      {
+        city: "Hyderabad",
+        fraud: 19,
+        transactions: 37,
+        tone: "danger" as const,
+        location: [17.385, 78.4867] as [number, number],
+      },
+      {
+        city: "Bangalore",
+        fraud: 3,
+        transactions: 18,
+        tone: "success" as const,
+        location: [12.9716, 77.5946] as [number, number],
+      },
+    ],
+    []
+  );
+
+  const [cityStats, setCityStats] = useState(fallbackCityStats);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadLocationHeatmap() {
+      try {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(`${baseUrl}/api/dashboard/location-heatmap`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed location heatmap: ${response.status}`);
+        }
+
+        const data = (await response.json()) as {
+          cities?: Array<{
+            city: string;
+            location: [number, number];
+            fraud: number;
+            transactions: number;
+          }>;
+        };
+
+        if (!data.cities || data.cities.length === 0) {
+          setCityStats(fallbackCityStats);
+          return;
+        }
+
+        const mapped = data.cities.map((city) => ({
+          city: city.city,
+          fraud: city.fraud,
+          transactions: city.transactions,
+          tone: (city.fraud >= 20 ? "danger" : city.fraud >= 8 ? "warning" : "success") as
+            | "danger"
+            | "warning"
+            | "success",
+          location: city.location,
+        }));
+
+        setCityStats(mapped);
+      } catch {
+        setCityStats(fallbackCityStats);
+      }
+    }
+
+    void loadLocationHeatmap();
+    return () => controller.abort();
+  }, [fallbackCityStats]);
 
   const globeMarkers = cityStats.map((city) => ({
     id: city.city,
     location: city.location,
-    visitors: city.fraud,
+    visitors: city.transactions,
     trend: city.fraud,
     fraud: city.fraud,
     riskTone: city.tone,
@@ -2457,6 +2538,7 @@ function FraudHeatMapMap({
   data: Array<{
     city: string;
     fraud: number;
+    transactions: number;
     tone: "danger" | "warning" | "success";
     location: [number, number];
   }>;
@@ -2472,8 +2554,8 @@ function FraudHeatMapMap({
       </div>
 
       <div className="rounded-2xl border border-white/10 overflow-hidden">
-        <MapContainer center={indiaCenter} zoom={5} className="h-[520px] w-full" scrollWheelZoom>
-          <TileLayer
+        <RLMapContainer center={indiaCenter} zoom={5} className="h-[520px] w-full" scrollWheelZoom>
+          <RLTileLayer
             attribution='&copy; OpenStreetMap contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
@@ -2485,25 +2567,25 @@ function FraudHeatMapMap({
             const ringScale = 0.65 + intensity;
 
             return [
-              <Circle
+              <RLCircle
                 key={`${city.city}-outer`}
                 center={city.location}
                 radius={98000 * ringScale}
                 pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.14 + intensity * 0.08 }}
               />,
-              <Circle
+              <RLCircle
                 key={`${city.city}-mid`}
                 center={city.location}
                 radius={64000 * ringScale}
                 pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.22 + intensity * 0.1 }}
               />,
-              <Circle
+              <RLCircle
                 key={`${city.city}-inner`}
                 center={city.location}
                 radius={32000 * ringScale}
                 pathOptions={{ color: color, weight: 0, fillColor: color, fillOpacity: 0.34 + intensity * 0.14 }}
               />,
-              <CircleMarker
+              <RLCircleMarker
                 key={`${city.city}-pin`}
                 center={city.location}
                 radius={5}
@@ -2515,10 +2597,10 @@ function FraudHeatMapMap({
                     <div>Fraud cases: {city.fraud}</div>
                   </div>
                 </Popup>
-              </CircleMarker>,
+              </RLCircleMarker>,
             ];
           })}
-        </MapContainer>
+        </RLMapContainer>
       </div>
 
     </div>
