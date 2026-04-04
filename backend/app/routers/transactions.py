@@ -2,11 +2,12 @@ import hashlib
 import json
 import math
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db import get_db
 from app.services.model_inference import run_inference
+from app.services.transaction_stream import transaction_stream
 from app.schemas import TransactionProcessRequest
 from app.utils.mongo import serialize_id, utc_now
 
@@ -24,6 +25,27 @@ def _ui_decision(decision: str) -> str:
     if decision == "mfa":
         return "REVIEW"
     return "APPROVE"
+
+
+def _to_live_transaction(item: dict, user: dict) -> dict:
+    user_key = item.get("user_key", "unknown")
+    frontend_payload = item.get("frontend_payload", {})
+    decision = item.get("pipeline_results", {}).get("model_decision", "approve")
+    fraud_score = int(item.get("pipeline_results", {}).get("calibrated_prob", 0) * 100)
+    why_flagged = item.get("pipeline_results", {}).get("why_flagged")
+
+    return {
+        "txn_id": str(item.get("_id")),
+        "user_id": user_key,
+        "username": user.get("name", user_key),
+        "amount": float(frontend_payload.get("transaction_amt", 0)),
+        "fraud_score": fraud_score,
+        "decision": _ui_decision(decision),
+        "merchant_name": frontend_payload.get("merchant_name", "Unknown Merchant"),
+        "timestamp": item.get("timestamp"),
+        "location": frontend_payload.get("location") or user.get("city", "Unknown"),
+        "why_flagged": why_flagged,
+    }
 
 
 @router.get("/live")
@@ -44,27 +66,19 @@ async def live_transactions(
     for item in rows:
         user_key = item.get("user_key", "unknown")
         user = users_map.get(user_key, {})
-        frontend_payload = item.get("frontend_payload", {})
-        decision = item.get("pipeline_results", {}).get("model_decision", "approve")
-        fraud_score = int(item.get("pipeline_results", {}).get("calibrated_prob", 0) * 100)
-        why_flagged = item.get("pipeline_results", {}).get("why_flagged")
-
-        transactions.append(
-            {
-                "txn_id": str(item.get("_id")),
-                "user_id": user_key,
-                "username": user.get("name", user_key),
-                "amount": float(frontend_payload.get("transaction_amt", 0)),
-                "fraud_score": fraud_score,
-                "decision": _ui_decision(decision),
-                "merchant_name": frontend_payload.get("merchant_name", "Unknown Merchant"),
-                "timestamp": item.get("timestamp"),
-                "location": frontend_payload.get("location") or user.get("city", "Unknown"),
-                "why_flagged": why_flagged,
-            }
-        )
+        transactions.append(_to_live_transaction(item, user))
 
     return {"transactions": transactions, "generated_at": utc_now()}
+
+
+@router.websocket("/ws/live")
+async def live_transactions_ws(websocket: WebSocket):
+    await transaction_stream.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await transaction_stream.disconnect(websocket)
 
 
 @router.post("/process", status_code=status.HTTP_201_CREATED)
@@ -207,6 +221,24 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
                 "transaction_ids": txn_id,
             },
         },
+    )
+
+    live_payload = _to_live_transaction(
+        {
+            "_id": insert_result.inserted_id,
+            "user_key": payload.user_key,
+            "frontend_payload": payload.frontend_payload.model_dump(),
+            "timestamp": now,
+            "pipeline_results": pipeline_results,
+        },
+        user,
+    )
+    await transaction_stream.broadcast(
+        {
+            "type": "transaction.created",
+            "transaction": live_payload,
+            "generated_at": now.isoformat(),
+        }
     )
 
     return {

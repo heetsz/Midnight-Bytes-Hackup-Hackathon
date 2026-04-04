@@ -377,78 +377,6 @@ function LiveTransactionsFeedSection() {
     trustedDeviceCount: number;
   } | null>(null);
 
-  const fallbackRows = useMemo<LiveTransaction[]>(
-    () => [
-      {
-        txn_id: "TXN991",
-        user_id: "rajesh",
-        username: "Rajesh",
-        amount: 48000,
-        fraud_score: 94,
-        decision: "BLOCK",
-        merchant_name: "CryptoXchange",
-        timestamp: new Date().toISOString(),
-        location: "Mumbai -> Hyderabad",
-      },
-      {
-        txn_id: "TXN990",
-        user_id: "priya",
-        username: "Priya",
-        amount: 5200,
-        fraud_score: 58,
-        decision: "REVIEW",
-        merchant_name: "New Merchant",
-        timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        location: "Pune",
-      },
-      {
-        txn_id: "TXN989",
-        user_id: "suresh",
-        username: "Suresh",
-        amount: 450,
-        fraud_score: 8,
-        decision: "APPROVE",
-        merchant_name: "Amazon",
-        timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-        location: "Bengaluru",
-      },
-      {
-        txn_id: "TXN988",
-        user_id: "ananya",
-        username: "Ananya",
-        amount: 12800,
-        fraud_score: 41,
-        decision: "REVIEW",
-        merchant_name: "TravelHub",
-        timestamp: new Date(Date.now() - 70 * 60 * 1000).toISOString(),
-        location: "Delhi",
-      },
-      {
-        txn_id: "TXN987",
-        user_id: "vikram",
-        username: "Vikram",
-        amount: 920,
-        fraud_score: 15,
-        decision: "APPROVE",
-        merchant_name: "MetroMart",
-        timestamp: new Date(Date.now() - 100 * 60 * 1000).toISOString(),
-        location: "Chennai",
-      },
-      {
-        txn_id: "TXN986",
-        user_id: "neha",
-        username: "Neha",
-        amount: 31000,
-        fraud_score: 78,
-        decision: "BLOCK",
-        merchant_name: "GiftCard Vault",
-        timestamp: new Date(Date.now() - 140 * 60 * 1000).toISOString(),
-        location: "Kolkata",
-      },
-    ],
-    []
-  );
-
   useEffect(() => {
     let isMounted = true;
 
@@ -467,22 +395,18 @@ function LiveTransactionsFeedSection() {
           return;
         }
 
-        setRows(data.transactions.length > 0 ? data.transactions : fallbackRows);
+        setRows(data.transactions);
       } catch {
-        if (isMounted) {
-          setRows(fallbackRows);
-        }
+        // Keep the latest rendered rows when initial fetch fails.
       }
     };
 
     void loadLiveTransactions();
-    const intervalId = window.setInterval(loadLiveTransactions, 6000);
 
     return () => {
       isMounted = false;
-      window.clearInterval(intervalId);
     };
-  }, [fallbackRows]);
+  }, []);
 
   useEffect(() => {
     if (rows.length === 0) {
@@ -508,11 +432,62 @@ function LiveTransactionsFeedSection() {
   }, [rows]);
 
   useEffect(() => {
-    const simulationId = window.setInterval(() => {
-      setRows((prev) => [createSyntheticTransaction(prev), ...prev.slice(0, 39)]);
-    }, 5000);
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+    const wsUrl = new URL(baseUrl);
+    wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
+    wsUrl.pathname = "/api/transactions/ws/live";
 
-    return () => window.clearInterval(simulationId);
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let active = true;
+
+    const connect = () => {
+      socket = new WebSocket(wsUrl.toString());
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as {
+            type?: string;
+            transaction?: LiveTransaction;
+          };
+
+          if (payload.type !== "transaction.created" || !payload.transaction) {
+            return;
+          }
+
+          setRows((prev) => {
+            const deduped = [
+              payload.transaction!,
+              ...prev.filter((row) => row.txn_id !== payload.transaction!.txn_id),
+            ];
+            return deduped.slice(0, 200);
+          });
+        } catch {
+          // Ignore malformed websocket payloads.
+        }
+      };
+
+      socket.onerror = () => {
+        socket?.close();
+      };
+
+      socket.onclose = () => {
+        if (!active) {
+          return;
+        }
+        reconnectTimer = window.setTimeout(connect, 2000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      active = false;
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer);
+      }
+      socket?.close();
+    };
   }, []);
 
   useEffect(() => {
@@ -635,7 +610,7 @@ function LiveTransactionsFeedSection() {
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-rose-400 animate-pulse" />
                 Live Risk Trend
               </div>
-              <span>Auto-refreshing</span>
+              <span>WebSocket stream</span>
             </div>
             <LiveTrendChart points={trend} />
           </div>
@@ -1032,56 +1007,6 @@ function generateInitialTrend(): TrendPoint[] {
       fishy: Math.max(0, Math.floor(Math.random() * 3)),
     };
   });
-}
-
-function createSyntheticTransaction(currentRows: LiveTransaction[]): LiveTransaction {
-  const names = [
-    "Rajesh",
-    "Priya",
-    "Suresh",
-    "Ananya",
-    "Vikram",
-    "Neha",
-    "Rohan",
-    "Meera",
-  ];
-  const merchants = [
-    "QuickShop",
-    "CryptoXchange",
-    "MetroMart",
-    "TravelHub",
-    "CloudKitchen",
-    "GiftCard Vault",
-    "RideNow",
-    "New Merchant",
-  ];
-  const locations = [
-    "Mumbai",
-    "Delhi",
-    "Hyderabad",
-    "Pune",
-    "Bengaluru",
-    "Chennai",
-    "Kolkata",
-    "Ahmedabad",
-  ];
-
-  const pick = <T,>(items: T[]) => items[Math.floor(Math.random() * items.length)];
-  const name = pick(names);
-  const score = Math.floor(Math.random() * 100);
-  const txnNum = currentRows.length + Math.floor(Math.random() * 1000);
-
-  return {
-    txn_id: `TXN${txnNum}`,
-    user_id: name.toLowerCase(),
-    username: name,
-    amount: Math.floor(200 + Math.random() * 90000),
-    fraud_score: score,
-    decision: score >= 70 ? "BLOCK" : score >= 40 ? "REVIEW" : "APPROVE",
-    merchant_name: pick(merchants),
-    timestamp: new Date().toISOString(),
-    location: pick(locations),
-  };
 }
 
 function getRiskMeta(score: number): {
