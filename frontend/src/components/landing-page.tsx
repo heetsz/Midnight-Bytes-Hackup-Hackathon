@@ -6,10 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from "react-leaflet";
 import * as Recharts from "recharts";
 import {
-<<<<<<< Updated upstream
-=======
   Bar as RechartsBar,
->>>>>>> Stashed changes
   BarChart,
   CartesianGrid,
   Cell,
@@ -52,18 +49,11 @@ import jsPDF from "jspdf";
 import { cn } from "@/lib/utils";
 import { FloatingPaths } from "@/components/ui/background-paths";
 
-<<<<<<< Updated upstream
-const RLMapContainer = MapContainer as any;
-const RLTileLayer = TileLayer as any;
-const RLCircle = Circle as any;
-const RLCircleMarker = CircleMarker as any;
-=======
 // Relax React-Leaflet typings locally to avoid TS prop incompatibilities
 const RLMapContainer = MapContainer as unknown as React.ComponentType<any>;
 const RLTileLayer = TileLayer as unknown as React.ComponentType<any>;
 const RLCircle = Circle as unknown as React.ComponentType<any>;
 const RLCircleMarker = CircleMarker as unknown as React.ComponentType<any>;
->>>>>>> Stashed changes
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -161,19 +151,11 @@ function Sidebar({
           </button>
         ))}
       </nav>
-<<<<<<< Updated upstream
-      <div className="px-4 py-6 border-t border-white/10 text-[11px] text-slate-500 flex flex-col gap-3">
-        <button
-          type="button"
-          onClick={() => navigate("/")}
-          className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-rose-400/60 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20 transition"
-=======
       <div className="px-4 py-6 border-t border-white/10 flex flex-col">
         <button
           type="button"
           onClick={() => navigate("/")}
           className="inline-flex items-center justify-center gap-2 rounded-full border border-rose-400/60 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20 transition"
->>>>>>> Stashed changes
         >
           <LogOut className="h-3.5 w-3.5" />
           Logout
@@ -359,13 +341,10 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                 ))}
               </Pie>
               <RechartsTooltip
-<<<<<<< Updated upstream
-=======
                 formatter={((value: unknown, name: unknown) => [
                   `${(value as number | string | undefined) ?? 0} cases`,
                   String(name ?? ""),
                 ]) as any}
->>>>>>> Stashed changes
                 contentStyle={{
                   background: "rgba(15, 23, 42, 0.95)",
                   border: "1px solid rgba(148,163,184,0.25)",
@@ -555,11 +534,7 @@ function LiveTransactionsFeedSection() {
       try {
         const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
         const response = await fetch(
-<<<<<<< Updated upstream
-          `${baseUrl}/api/user/${currentTransaction.user_id}/profile`,
-=======
           `${baseUrl}/api/user/${user_id}/profile`,
->>>>>>> Stashed changes
           { signal: controller.signal }
         );
 
@@ -2555,19 +2530,16 @@ function UsersSection() {
                               color: "#e2e8f0",
                             }}
                           />
-<<<<<<< Updated upstream
-                          <Recharts.Bar dataKey="count" radius={[8, 8, 0, 0]}>
-                            {loginBarData.map((entry, index) => (
-                              <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
-                            ))}
-                          </Recharts.Bar>
-=======
                           <RechartsBar dataKey="count" radius={[8, 8, 0, 0]}>
                             {loginBarData.map((entry, index) => (
                               <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
                             ))}
                           </RechartsBar>
->>>>>>> Stashed changes
+                          <RechartsBar dataKey="count" radius={[8, 8, 0, 0]}>
+                            {loginBarData.map((entry, index) => (
+                              <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
+                            ))}
+                          </RechartsBar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
