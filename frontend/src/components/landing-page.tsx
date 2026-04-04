@@ -1569,9 +1569,111 @@ type FraudRingGraphResponse = {
   generated_at: string;
 };
 
+type FraudRingSourceTransaction = {
+  user_id: string;
+  username: string;
+  merchant_name: string;
+  location: string;
+  fraud_score: number;
+};
+
+function buildFallbackFraudRing(transactions: FraudRingSourceTransaction[]) {
+  const userMap = new Map<string, { id: string; label: string; maxRisk: number }>();
+  const merchantUsers = new Map<string, Set<string>>();
+  const locationUsers = new Map<string, Set<string>>();
+
+  for (const txn of transactions) {
+    const userId = (txn.user_id || "").trim();
+    if (!userId) {
+      continue;
+    }
+
+    const user = userMap.get(userId) ?? {
+      id: userId,
+      label: txn.username || userId,
+      maxRisk: 0,
+    };
+    user.maxRisk = Math.max(user.maxRisk, Number(txn.fraud_score) || 0);
+    userMap.set(userId, user);
+
+    const merchant = (txn.merchant_name || "").trim().toLowerCase();
+    if (merchant) {
+      if (!merchantUsers.has(merchant)) {
+        merchantUsers.set(merchant, new Set<string>());
+      }
+      merchantUsers.get(merchant)!.add(userId);
+    }
+
+    const location = (txn.location || "").trim().toLowerCase();
+    if (location) {
+      if (!locationUsers.has(location)) {
+        locationUsers.set(location, new Set<string>());
+      }
+      locationUsers.get(location)!.add(userId);
+    }
+  }
+
+  const nodes: FraudRingNode[] = [];
+  const links: FraudRingLink[] = [];
+
+  for (const user of userMap.values()) {
+    nodes.push({
+      id: user.id,
+      label: user.label,
+      node_type: "user",
+      risk_score: Math.min(100, Math.max(20, Math.round(user.maxRisk))),
+    });
+  }
+
+  for (const [merchant, users] of merchantUsers.entries()) {
+    if (users.size < 2) {
+      continue;
+    }
+    const merchantId = `merchant:${merchant}`;
+    nodes.push({
+      id: merchantId,
+      label: merchant.slice(0, 20),
+      node_type: "merchant",
+      risk_score: Math.min(100, 45 + users.size * 8),
+    });
+    for (const userId of users) {
+      links.push({
+        source: userId,
+        target: merchantId,
+        relation: "shared_merchant",
+        confidence: Math.min(0.98, 0.55 + users.size * 0.08),
+      });
+    }
+  }
+
+  for (const [location, users] of locationUsers.entries()) {
+    if (users.size < 2) {
+      continue;
+    }
+    const locationId = `location:${location}`;
+    nodes.push({
+      id: locationId,
+      label: location.slice(0, 20),
+      node_type: "location",
+      risk_score: Math.min(100, 35 + users.size * 7),
+    });
+    for (const userId of users) {
+      links.push({
+        source: userId,
+        target: locationId,
+        relation: "shared_location",
+        confidence: Math.min(0.95, 0.45 + users.size * 0.09),
+      });
+    }
+  }
+
+  return { nodes, links };
+}
+
 function FraudRingSection() {
   const [nodes, setNodes] = useState<FraudRingNode[]>([]);
   const [links, setLinks] = useState<FraudRingLink[]>([]);
+  const [graphSource, setGraphSource] = useState<"device_graph" | "transaction_inferred">("device_graph");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
   const [isPanning, setIsPanning] = useState(false);
@@ -1602,8 +1704,28 @@ function FraudRingSection() {
         }
 
         const data = (await response.json()) as FraudRingGraphResponse;
-        setNodes(data.nodes);
-        setLinks(data.links);
+        if (data.nodes.length > 0 && data.links.length > 0) {
+          setNodes(data.nodes);
+          setLinks(data.links);
+          setGraphSource("device_graph");
+          return;
+        }
+
+        const txResponse = await fetch(`${baseUrl}/api/transactions/live?limit=120`, {
+          signal: controller.signal,
+        });
+
+        if (!txResponse.ok) {
+          setNodes([]);
+          setLinks([]);
+          return;
+        }
+
+        const txData = (await txResponse.json()) as { transactions: FraudRingSourceTransaction[] };
+        const fallback = buildFallbackFraudRing(txData.transactions ?? []);
+        setNodes(fallback.nodes);
+        setLinks(fallback.links);
+        setGraphSource("transaction_inferred");
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
@@ -1644,8 +1766,14 @@ function FraudRingSection() {
         }
 
         const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2;
-        const isDevice = node.node_type === "device";
-        const ringRadius = isDevice ? radius * 0.5 : radius;
+        const ringRadius =
+          node.node_type === "device"
+            ? radius * 0.45
+            : node.node_type === "merchant"
+            ? radius * 0.62
+            : node.node_type === "location"
+            ? radius * 0.78
+            : radius;
 
         next[node.id] = {
           x: centerX + Math.cos(angle) * ringRadius,
@@ -1666,6 +1794,9 @@ function FraudRingSection() {
     <section id="fraud-ring" className="space-y-10">
       <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto space-y-6">
         <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">Fraud Ring Graph</h2>
+        <div className="rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-xs text-slate-300">
+          Source: {graphSource === "device_graph" ? "Shared device graph" : "Inferred from shared merchant/location"}
+        </div>
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)] items-start">
           <div className="rounded-3xl bg-slate-950/85 border border-white/10 backdrop-blur-2xl p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
@@ -1808,6 +1939,10 @@ function FraudRingSection() {
                   const nodeColor =
                     node.node_type === "device"
                       ? "#38bdf8"
+                      : node.node_type === "merchant"
+                      ? "#c084fc"
+                      : node.node_type === "location"
+                      ? "#34d399"
                       : node.risk_score >= 70
                       ? "#fb7185"
                       : node.risk_score >= 40
@@ -2906,6 +3041,23 @@ function TransactionReportSection() {
   const [selectedCount, setSelectedCount] = useState(10);
    const [decisionFilter, setDecisionFilter] = useState<"both" | "approved" | "blocked">("both");
 
+  const transactionGraphData = useMemo(
+    () =>
+      [...rows]
+        .reverse()
+        .map((row, index) => ({
+          index: index + 1,
+          amount: Number(row.amount) || 0,
+          fraudScore: Number(row.fraud_score) || 0,
+          decision: row.decision,
+          label: new Date(row.timestamp).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        })),
+    [rows]
+  );
+
   const loadTransactions = async () => {
     // Guard: require a positive number
     if (!selectedCount || selectedCount <= 0) {
@@ -3086,6 +3238,92 @@ function TransactionReportSection() {
             >
               Download PDF
             </button>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+            <div className="mb-3 flex items-center justify-between text-xs text-slate-400">
+              <span>Transaction graph</span>
+              <span>Amount vs Fraud score</span>
+            </div>
+            <div className="h-[280px]">
+              {transactionGraphData.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-sm text-slate-400">
+                  Load transactions to generate graph.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={transactionGraphData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
+                    <CartesianGrid stroke="rgba(148,163,184,0.15)" strokeDasharray="4 4" />
+                    <XAxis
+                      dataKey="index"
+                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      axisLine={{ stroke: "rgba(148,163,184,0.25)" }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      yAxisId="amount"
+                      tick={{ fill: "#86efac", fontSize: 11 }}
+                      axisLine={{ stroke: "rgba(134,239,172,0.3)" }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      yAxisId="risk"
+                      orientation="right"
+                      domain={[0, 100]}
+                      tick={{ fill: "#fda4af", fontSize: 11 }}
+                      axisLine={{ stroke: "rgba(251,113,133,0.3)" }}
+                      tickLine={false}
+                    />
+                    <RechartsTooltip
+                      formatter={(value: number, name: string) => {
+                        if (name === "amount") {
+                          return [
+                            new Intl.NumberFormat("en-IN", {
+                              style: "currency",
+                              currency: "INR",
+                              maximumFractionDigits: 0,
+                            }).format(value),
+                            "Amount",
+                          ];
+                        }
+                        return [`${Math.round(value)}%`, "Fraud score"];
+                      }}
+                      labelFormatter={(label: number) => {
+                        const point = transactionGraphData.find((item) => item.index === label);
+                        if (!point) {
+                          return `Txn #${label}`;
+                        }
+                        return `Txn #${label} • ${point.label}`;
+                      }}
+                      contentStyle={{
+                        background: "rgba(15, 23, 42, 0.95)",
+                        border: "1px solid rgba(148,163,184,0.25)",
+                        borderRadius: "10px",
+                        color: "#e2e8f0",
+                      }}
+                    />
+                    <Line
+                      yAxisId="amount"
+                      type="monotone"
+                      dataKey="amount"
+                      stroke="#22c55e"
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                    />
+                    <Line
+                      yAxisId="risk"
+                      type="monotone"
+                      dataKey="fraudScore"
+                      stroke="#fb7185"
+                      strokeWidth={2}
+                      dot={{ r: 2 }}
+                      activeDot={{ r: 4 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
           </div>
 
           <div className="overflow-x-auto rounded-2xl border border-white/10 mt-2">

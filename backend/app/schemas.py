@@ -45,14 +45,14 @@ class UserResponse(BaseModel):
 
 
 class DeviceFingerprint(BaseModel):
-    id_31_idx: int
-    id_33_idx: int
-    DeviceType_idx: int
-    DeviceInfo_idx: int
-    os_browser_idx: int
-    screen_width: int
-    screen_height: int
-    hardware_concurrency: int
+    id_31_idx: int = 0
+    id_33_idx: int = 0
+    DeviceType_idx: int = 0
+    DeviceInfo_idx: int = 0
+    os_browser_idx: int = 0
+    screen_width: int = 0
+    screen_height: int = 0
+    hardware_concurrency: int = 0
 
 
 class DeviceRegisterRequest(BaseModel):

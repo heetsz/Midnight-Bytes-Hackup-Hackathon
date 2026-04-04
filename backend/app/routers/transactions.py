@@ -157,7 +157,23 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
             await db.users.insert_one(user_doc)
             user = user_doc
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+            # Keep mobile ingestion resilient: create a minimal user profile from user_key.
+            user_doc = {
+                "user_key": user_key,
+                "name": payload.name or user_key,
+                "email": payload.email or f"{user_key}@mobile.local",
+                "phone_no": "",
+                "city": "",
+                "created_at": now,
+                "usual_login_hour": 10,
+                "user_txn_count": 0,
+                "device_centroid": [],
+                "known_devices": [],
+                "recent_behavior_seq": [],
+                "transaction_ids": [],
+            }
+            await db.users.insert_one(user_doc)
+            user = user_doc
 
         known_devices = user.get("known_devices", [])
         known_index = next((i for i, d in enumerate(known_devices) if d.get("device_hash") == device_hash), None)
