@@ -23,18 +23,28 @@ import {
   AlertTriangle,
   BarChart3,
   BellRing,
+  Brain,
   BrainCircuit,
+  Calendar,
   CheckCircle2,
+  Clock,
   Clock3,
   CreditCard,
   Globe2,
   LayoutDashboard,
   Layers,
+  Lock,
+  MapPin,
+  Shield,
   ShieldCheck,
+  Smartphone,
+  TrendingUp,
+  User,
   UserRound,
   XCircle,
   Zap,
 } from "lucide-react";
+import jsPDF from "jspdf";
 import { cn } from "@/lib/utils";
 import { FloatingPaths } from "@/components/ui/background-paths";
 
@@ -46,11 +56,15 @@ const RLCircleMarker = CircleMarker as any;
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "live-transactions", label: "Live Transactions Feed", icon: Clock3 },
+  {
+    id: "live-transaction-simulation",
+    label: "Transaction Simulation",
+    icon: Activity,
+  },
   { id: "fraud-ring", label: "Fraud Ring Graph", icon: Layers },
   { id: "users", label: "Users", icon: UserRound },
-  { id: "location", label: "Location", icon: Globe2 },
-  { id: "alerts", label: "Alerts", icon: BellRing },
-  { id: "transaction-analysis", label: "Transaction Analysis", icon: CreditCard },
+  { id: "location", label: "Fraud Heatmap", icon: Globe2 },
+  { id: "transaction-report", label: "Transaction Report", icon: BarChart3 },
 ];
 
 export function DashboardApp() {
@@ -69,13 +83,13 @@ export function DashboardApp() {
           {activeSection === "live-transactions" && (
             <LiveTransactionsFeedSection />
           )}
+          {activeSection === "live-transaction-simulation" && (
+            <LiveTransactionSimulationSection />
+          )}
           {activeSection === "fraud-ring" && <FraudRingSection />}
           {activeSection === "users" && <UsersSection />}
           {activeSection === "location" && <LocationSection />}
-          {activeSection === "alerts" && <AlertsSection />}
-          {activeSection === "transaction-analysis" && (
-            <TransactionAnalysisSection />
-          )}
+          {activeSection === "transaction-report" && <TransactionReportSection />}
         </main>
       </div>
     </div>
@@ -99,7 +113,7 @@ function Sidebar({
         </div>
         <div className="hidden lg:flex flex-col">
           <span className="text-xs uppercase tracking-[0.2em] text-slate-400">
-            Quantum Shield
+            SurakshaAI
           </span>
           <span className="text-sm font-medium text-slate-50">
             AI Fraud Ops
@@ -136,13 +150,9 @@ function Sidebar({
         ))}
       </nav>
       <div className="px-4 py-6 border-t border-white/10 text-[11px] text-slate-500 flex flex-col gap-3">
-        <span>LIVE · Bank-grade security</span>
-        <span className="text-slate-600">
-          Powered by explainable AI
-        </span>
         <button
           type="button"
-          onClick={() => navigate("/login")}
+          onClick={() => navigate("/")}
           className="mt-1 inline-flex items-center justify-center gap-2 rounded-full border border-rose-400/60 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-200 hover:bg-rose-500/20 transition"
         >
           <LogOut className="h-3.5 w-3.5" />
@@ -197,9 +207,9 @@ function DashboardSection() {
   const formatNumber = (value: number) =>
     new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
   const formatCurrency = (value: number) =>
-    new Intl.NumberFormat("en-US", {
+    new Intl.NumberFormat("en-IN", {
       style: "currency",
-      currency: "USD",
+      currency: "INR",
       maximumFractionDigits: 0,
     }).format(value);
 
@@ -227,7 +237,7 @@ function DashboardSection() {
         <DashboardCard
           label="False Positive"
           value={formatNumber(falsePositive)}
-          helper="Placeholder from backend mapping"
+          helper=""
           chip={{ label: "Tune model", tone: "warning" }}
         />
       </div>
@@ -299,19 +309,30 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
                 paddingAngle={2}
                 stroke="rgba(2,6,23,0.8)"
                 labelLine={false}
-                label={({ payload, x, y }) => (
-                  <text
-                    x={x}
-                    y={y}
-                    fill="#e2e8f0"
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize={12}
-                    fontWeight={600}
-                  >
-                    {`${Math.min(100, Math.max(0, Math.round(payload?.percent ?? 0)))}%`}
-                  </text>
-                )}
+                label={({ payload, x, y }) => {
+                  const percent = Math.min(
+                    100,
+                    Math.max(0, Math.round(payload?.percent ?? 0))
+                  );
+
+                  if (!percent) {
+                    return null;
+                  }
+
+                  return (
+                    <text
+                      x={x}
+                      y={y}
+                      fill="#e2e8f0"
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={12}
+                      fontWeight={600}
+                    >
+                      {`${percent}%`}
+                    </text>
+                  );
+                }}
               >
                 {chartData.map((entry, index) => (
                   <Cell key={`cell-${entry.name}`} fill={donutColors[index % donutColors.length]} />
@@ -774,75 +795,592 @@ function LiveTransactionsFeedSection() {
       </div>
 
       {activeTransaction && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm p-4 md:p-8 overflow-y-auto">
-          <div className="mx-auto max-w-3xl rounded-2xl border border-white/15 bg-slate-950/95 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <h3 className="text-lg md:text-xl font-semibold tracking-[0.05em]">
-                {activeTransaction.txn_id} - DETAILED ANALYSIS
-              </h3>
-              <button
-                type="button"
-                onClick={() => setActiveTransaction(null)}
-                className="rounded-full border border-white/20 px-3 py-1 text-sm text-slate-300 hover:bg-white/10"
+        <TransactionDetailOverlay
+          transaction={activeTransaction}
+          userMeta={activeUserMeta}
+          onClose={() => setActiveTransaction(null)}
+        />
+      )}
+    </section>
+  );
+}
+
+type DetailTransactionStatus = "approved" | "rejected" | "review";
+
+type DetailRiskFactor = {
+  factor: string;
+  score: number;
+  severity: "low" | "medium" | "high" | "critical";
+  description: string;
+};
+
+function TransactionDetailOverlay({
+  transaction,
+  userMeta,
+  onClose,
+}: {
+  transaction: LiveTransaction;
+  userMeta: { usualCity: string; trustedDeviceCount: number } | null;
+  onClose: () => void;
+}) {
+  const status: DetailTransactionStatus =
+    transaction.decision === "APPROVE"
+      ? "approved"
+      : transaction.decision === "BLOCK"
+      ? "rejected"
+      : "review";
+
+  const formattedAmount = `INR ${new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 0,
+  }).format(transaction.amount)}`;
+
+  const severityFromScore = (score: number): DetailRiskFactor["severity"] => {
+    if (score >= 80) return "critical";
+    if (score >= 60) return "high";
+    if (score >= 40) return "medium";
+    return "low";
+  };
+
+  const riskFactors: DetailRiskFactor[] = [
+    {
+      factor: "Transaction Amount Pattern",
+      score: Math.min(40, Math.max(10, Math.round(transaction.fraud_score * 0.4))),
+      severity: severityFromScore(transaction.fraud_score),
+      description:
+        "Amount evaluated against recent spending behaviour and peer group distribution.",
+    },
+    {
+      factor: "Location & Usual City",
+      score: Math.min(35, Math.max(8, Math.round(transaction.fraud_score * 0.3))),
+      severity: userMeta && userMeta.usualCity !== transaction.location ? "high" : "medium",
+      description:
+        userMeta && userMeta.usualCity
+          ? `Current transaction in ${transaction.location}, usual activity from ${userMeta.usualCity}.`
+          : "Limited historical location signals available for this user.",
+    },
+    {
+      factor: "Device & Session Confidence",
+      score: Math.min(25, Math.max(5, Math.round(transaction.fraud_score * 0.2))),
+      severity: userMeta && userMeta.trustedDeviceCount > 0 ? "medium" : "high",
+      description:
+        userMeta && userMeta.trustedDeviceCount > 0
+          ? `Seen on ${userMeta.trustedDeviceCount} trusted device(s); checking for anomalies in this session.`
+          : "No previously trusted devices found for this account.",
+    },
+    {
+      factor: "Model Residual Risk",
+      score: Math.max(5, Math.round(transaction.fraud_score * 0.1)),
+      severity: severityFromScore(transaction.fraud_score),
+      description:
+        "Residual model risk after combining behavioural, device, and geo features.",
+    },
+  ];
+
+  const aiExplanation = {
+    decision: transaction.decision,
+    confidence: Math.min(99, Math.max(60, transaction.fraud_score)),
+    reasoning:
+      transaction.why_flagged ||
+      "Our AI model combined behavioural, device, and geographic signals to estimate risk for this payment.",
+    recommendations:
+      transaction.decision === "BLOCK"
+        ? [
+            "Contact the cardholder to verify this payment attempt.",
+            "Review recent activity for similar high‑risk patterns.",
+            "Consider placing a temporary hold on the account.",
+            "Escalate to the fraud operations team for manual review.",
+          ]
+        : transaction.decision === "REVIEW"
+        ? [
+            "Queue this transaction for secondary manual review.",
+            "Cross‑check device history and recent geo‑location changes.",
+            "Increase monitoring sensitivity for this account for 24 hours.",
+            "Notify the cardholder about unusual activity for awareness.",
+          ]
+        : [
+            "Log this transaction as a normal pattern for future learning.",
+            "No immediate action required; continue to monitor background risk.",
+            "Keep device and location fingerprinting up to date.",
+            "Add this behaviour to the user’s trusted baseline over time.",
+          ],
+  };
+
+  const historicalContext = [
+    {
+      label: "Decision",
+      value: transaction.decision,
+      icon: <Shield className="h-4 w-4" />,
+    },
+    {
+      label: "Risk Score",
+      value: `${transaction.fraud_score}/100`,
+      icon: <Activity className="h-4 w-4" />,
+    },
+    {
+      label: "Location",
+      value: transaction.location,
+      icon: <MapPin className="h-4 w-4" />,
+    },
+    {
+      label: "User ID",
+      value: transaction.user_id,
+      icon: <User className="h-4 w-4" />,
+    },
+  ];
+
+  const getSeverityColor = (severity: DetailRiskFactor["severity"]) => {
+    switch (severity) {
+      case "critical":
+        return "bg-rose-500";
+      case "high":
+        return "bg-orange-500";
+      case "medium":
+        return "bg-amber-500";
+      case "low":
+        return "bg-blue-500";
+      default:
+        return "bg-gray-500";
+    }
+  };
+
+  const getStatusConfig = (state: DetailTransactionStatus) => {
+    switch (state) {
+      case "approved":
+        return {
+          icon: CheckCircle2,
+          color: "text-emerald-500",
+          bg: "bg-emerald-500/10",
+          label: "Approved",
+        };
+      case "rejected":
+        return {
+          icon: XCircle,
+          color: "text-rose-500",
+          bg: "bg-rose-500/10",
+          label: "Rejected",
+        };
+      case "review":
+        return {
+          icon: AlertTriangle,
+          color: "text-amber-500",
+          bg: "bg-amber-500/10",
+          label: "Under Review",
+        };
+    }
+  };
+
+  const statusConfig = getStatusConfig(status);
+  const StatusIcon = statusConfig.icon;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xl p-4 md:p-8 overflow-y-auto">
+      <div className="relative mx-auto max-w-5xl">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 z-10 inline-flex items-center gap-1 rounded-full border border-slate-700/60 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-900/95"
+        >
+          <XCircle className="h-3.5 w-3.5" />
+          Close
+        </button>
+
+        <div className="min-h-[640px] rounded-3xl border border-slate-800/80 bg-slate-950/95 px-6 pb-6 pt-12 text-slate-50 shadow-[0_24px_80px_rgba(15,23,42,0.9)] md:px-8 md:pb-8 md:pt-16">
+          <div className="mx-auto space-y-8">
+            <div className="flex flex-col items-start justify-between gap-4 md:flex-row">
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-2xl border border-slate-700 bg-slate-900/80 p-2.5">
+                    <Shield className="h-5 w-5 text-cyan-400" />
+                  </div>
+                  <div>
+                    <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                      Fraud Detection Analysis
+                    </h1>
+                    <p className="text-xs text-slate-400">
+                      Transaction ID: {transaction.txn_id}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div
+                className={cn(
+                  "flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-medium",
+                  statusConfig.bg,
+                  "border-slate-700/70"
+                )}
               >
-                Close
-              </button>
+                <StatusIcon className={cn("h-4 w-4", statusConfig.color)} />
+                <span className={cn("", statusConfig.color)}>{statusConfig.label}</span>
+              </div>
             </div>
 
-            <div className="space-y-5 p-5 text-sm">
-              <div className="grid gap-2 text-slate-200">
-                <div>User: {activeTransaction.username} ({activeTransaction.user_id})</div>
-                <div>
-                  Amount: {new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(activeTransaction.amount)}
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 md:p-6">
+              <div className="grid gap-6 md:grid-cols-3">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                    <Brain className="h-4 w-4" />
+                    Overall Risk Score
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <span className="text-4xl font-semibold text-rose-400 md:text-5xl">
+                      {transaction.fraud_score}
+                    </span>
+                    <span className="mb-1 text-sm text-slate-500 md:mb-2 md:text-base">/100</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-rose-500 via-amber-400 to-emerald-400 transition-all"
+                      style={{ width: `${transaction.fraud_score}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Automated risk score combining device, behaviour, and geo signals.
+                  </p>
                 </div>
-                <div>Merchant: {activeTransaction.merchant_name}</div>
-                <div>Time: {new Date(activeTransaction.timestamp).toLocaleString()}</div>
-                <div>
-                  Device: {activeUserMeta?.trustedDeviceCount ? `Trusted (${activeUserMeta.trustedDeviceCount})` : "UNKNOWN"} ⚠️
+
+                <div className="md:col-span-2">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {historicalContext.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-3 text-sm"
+                      >
+                        <div className="rounded-xl bg-slate-900/80 p-2 text-slate-200">
+                          {item.icon}
+                        </div>
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                            {item.label}
+                          </p>
+                          <p className="text-sm font-medium text-slate-50">
+                            {item.value}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div>
-                  Location: {activeTransaction.location} (usual: {activeUserMeta?.usualCity || "Unknown"})
+              </div>
+            </div>
+
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 text-sm md:p-6">
+                <h3 className="mb-4 text-base font-medium text-slate-50">
+                  Transaction Details
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <User className="mt-0.5 h-4 w-4 text-slate-400" />
+                    <div className="flex-1">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Customer
+                      </p>
+                      <p className="text-sm font-medium text-slate-50">
+                        {transaction.username || transaction.user_id}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <CreditCard className="mt-0.5 h-4 w-4 text-slate-400" />
+                    <div className="flex-1">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Payment Method
+                      </p>
+                      <p className="text-sm font-medium text-slate-50">
+                        Virtual •••• 0000
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <MapPin className="mt-0.5 h-4 w-4 text-slate-400" />
+                    <div className="flex-1">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Location &amp; Merchant
+                      </p>
+                      <p className="text-sm font-medium text-slate-50">
+                        {transaction.merchant_name}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        {transaction.location}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <Clock className="mt-0.5 h-4 w-4 text-slate-400" />
+                    <div className="flex-1">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Transaction Time
+                      </p>
+                      <p className="text-sm font-medium text-slate-50">
+                        {new Date(transaction.timestamp).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3">
+                    <Smartphone className="mt-0.5 h-4 w-4 text-slate-400" />
+                    <div className="flex-1">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                        Device &amp; Profile
+                      </p>
+                      <p className="text-sm font-medium text-slate-50">
+                        {userMeta?.trustedDeviceCount
+                          ? `${userMeta.trustedDeviceCount} trusted device(s)`
+                          : "No trusted devices on record"}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        Usual city: {userMeta?.usualCity || "Unknown"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-sm">
+                    <span className="font-medium text-slate-300">Amount</span>
+                    <span className="text-xl font-semibold text-slate-50 md:text-2xl">
+                      {formattedAmount}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div className="border-t border-white/10 pt-4 space-y-3">
-                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Fraud Score Breakdown</div>
-                <AnalysisScoreRow label="ATO Score" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 16))} />
-                <AnalysisScoreRow label="Amount Anomaly" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 3))} />
-                <AnalysisScoreRow label="Low & Slow" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 32))} />
-                <AnalysisScoreRow label="Velocity" score={Math.min(100, Math.max(0, activeTransaction.fraud_score - 50))} />
-                <AnalysisScoreRow label="Fraud Ring" score={Math.max(0, Math.round(activeTransaction.fraud_score * 0.05))} />
-                <div className="h-px bg-white/10" />
-                <AnalysisScoreRow label="FINAL SCORE" score={activeTransaction.fraud_score} emphasize />
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 text-sm md:p-6">
+                <h3 className="mb-4 text-base font-medium text-slate-50">
+                  Risk Factor Breakdown
+                </h3>
+                <div className="space-y-4">
+                  {riskFactors.map((factor, idx) => (
+                    <div
+                      key={idx}
+                      className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/70 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-2">
+                          <div className={cn("mt-1 h-2 w-2 rounded-full", getSeverityColor(factor.severity))} />
+                          <div>
+                            <p className="text-sm font-medium text-slate-50">
+                              {factor.factor}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-400">
+                              {factor.description}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-lg font-semibold text-rose-400">
+                            +{factor.score}
+                          </span>
+                          <span className="text-[10px] uppercase text-slate-500">
+                            {factor.severity}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className={cn("h-full rounded-full", getSeverityColor(factor.severity))}
+                          style={{ width: `${Math.min(100, (factor.score / 40) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-5 text-sm md:p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-2">
+                  <Brain className="h-4 w-4 text-indigo-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-medium text-slate-50">
+                    AI Decision Explanation
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Confidence: {aiExplanation.confidence}%
+                  </p>
+                </div>
               </div>
 
-              <div className="border-t border-white/10 pt-4 space-y-2">
-                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Why Flagged (LLM Generated)</div>
-                <p className="text-slate-200 leading-6">
-                  {activeTransaction.why_flagged ||
-                    `Critical: Transaction of ${new Intl.NumberFormat("en-IN", {
-                      style: "currency",
-                      currency: "INR",
-                      maximumFractionDigits: 0,
-                    }).format(activeTransaction.amount)} from ${
-                      activeUserMeta?.trustedDeviceCount ? "a known" : "an unrecognized"
-                    } device in ${activeTransaction.location} at unusual time. Pattern is consistent with account takeover risk. Recommend immediate review and temporary freeze.`}
-                </p>
-              </div>
+              <div className="space-y-4">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Lock className="h-3.5 w-3.5 text-slate-400" />
+                    <span className="text-xs font-medium text-slate-50">
+                      Decision Reasoning
+                    </span>
+                  </div>
+                  <p className="text-xs leading-relaxed text-slate-300">
+                    {aiExplanation.reasoning}
+                  </p>
+                </div>
 
-              <div className="border-t border-white/10 pt-4 space-y-3">
-                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">Analyst Actions</div>
-                <div className="flex flex-wrap gap-2">
-                  <button className="rounded-full border border-emerald-400/60 px-3 py-1.5 text-emerald-200 hover:bg-emerald-500/10">✅ Confirm Fraud</button>
-                  <button className="rounded-full border border-rose-400/60 px-3 py-1.5 text-rose-200 hover:bg-rose-500/10">❌ False Positive</button>
-                  <button className="rounded-full border border-amber-400/60 px-3 py-1.5 text-amber-200 hover:bg-amber-500/10">🔒 Freeze Account</button>
-                  <button className="rounded-full border border-cyan-400/60 px-3 py-1.5 text-cyan-200 hover:bg-cyan-500/10">📱 Call User</button>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                    <span className="text-xs font-medium text-slate-50">
+                      Recommended Actions
+                    </span>
+                  </div>
+                  <ul className="space-y-2">
+                    {aiExplanation.recommendations.map((rec, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start gap-2 text-xs text-slate-300"
+                      >
+                        <span className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-slate-900/80 text-[11px] font-medium text-slate-200">
+                          {idx + 1}
+                        </span>
+                        <span className="flex-1">{rec}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
+    </div>
+  );
+}
+
+function LiveTransactionSimulationSection() {
+  const [rows, setRows] = useState<LiveTransaction[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const loadAppTransactions = async () => {
+    try {
+      setIsLoading(true);
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+      const response = await fetch(`${baseUrl}/api/transactions/live?limit=200`);
+
+      if (!response.ok) {
+        throw new Error(`Failed live transactions: ${response.status}`);
+      }
+
+      const data = (await response.json()) as LiveTransactionsResponse;
+
+      const appRows = data.transactions.filter(
+        (row) => row.merchant_name === "Mobile Merchant" || row.location === "Mobile User"
+      );
+
+      setRows(appRows);
+    } catch {
+      setRows([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadAppTransactions();
+  }, []);
+
+  return (
+    <section id="live-transaction-simulation" className="space-y-8">
+      <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="text-2xl md:text-3xl font-semibold tracking-tight">
+              Transaction Simulation
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={loadAppTransactions}
+            disabled={isLoading}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-medium transition",
+              isLoading
+                ? "border-slate-500/60 bg-slate-800/80 text-slate-300 cursor-wait"
+                : "border-emerald-400/70 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25"
+            )}
+          >
+            <Activity className="h-3.5 w-3.5" />
+            {isLoading ? "Refreshing..." : "Refresh app transactions"}
+          </button>
+        </div>
+
+        <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
+          <div className="flex items-center justify-between text-sm">
+            <div className="font-semibold tracking-wide text-slate-100">
+              Completed App Transactions
+            </div>
+            <div className="text-xs text-slate-400">
+              {rows.length > 0
+                ? `Showing ${rows.length} transactions from the mobile app`
+                : "No completed transactions from the app yet"}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-white/10">
+            <table className="w-full min-w-[860px] text-sm">
+              <thead className="bg-slate-900/85 text-slate-300">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium">Transaction ID</th>
+                  <th className="text-left px-4 py-3 font-medium">User</th>
+                  <th className="text-left px-4 py-3 font-medium">Amount</th>
+                  <th className="text-left px-4 py-3 font-medium">Fraud Score</th>
+                  <th className="text-left px-4 py-3 font-medium">Decision</th>
+                  <th className="text-left px-4 py-3 font-medium">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr
+                    key={row.txn_id}
+                    className="border-t border-white/5 hover:bg-white/5"
+                  >
+                    <td className="px-4 py-3 text-slate-100 font-semibold tracking-[0.08em] uppercase">
+                      {row.txn_id}
+                    </td>
+                    <td className="px-4 py-3 text-slate-100">{row.username}</td>
+                    <td className="px-4 py-3 text-emerald-300 font-medium">
+                      {new Intl.NumberFormat("en-IN", {
+                        style: "currency",
+                        currency: "INR",
+                        maximumFractionDigits: 0,
+                      }).format(row.amount)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-100">{row.fraud_score}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={cn(
+                          "inline-flex rounded-full border px-2 py-1 text-xs",
+                          row.decision === "BLOCK"
+                            ? "text-rose-100 bg-rose-500/15 border-rose-400/60"
+                            : row.decision === "REVIEW"
+                            ? "text-amber-100 bg-amber-500/15 border-amber-400/60"
+                            : "text-emerald-100 bg-emerald-500/15 border-emerald-400/60"
+                        )}
+                      >
+                        {row.decision}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">
+                      {new Date(row.timestamp).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-4 py-10 text-center text-slate-400"
+                    >
+                      No completed mobile app transactions have been
+                      recorded yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
@@ -898,14 +1436,53 @@ function LiveTrendChart({ points }: { points: TrendPoint[] }) {
   const getY = (value: number) =>
     padY + ((maxY - value) / Math.max(maxY, 1)) * innerHeight;
 
-  const toPath = (values: number[]) =>
-    values
-      .map((value, index) => `${index === 0 ? "M" : "L"} ${getX(index)} ${getY(value)}`)
-      .join(" ");
+  const toSmoothPath = (values: number[]) => {
+    const segments: string[] = [];
 
-  const safePath = toPath(chartPoints.map((item) => item.safe));
-  const riskyPath = toPath(chartPoints.map((item) => item.risky));
-  const fishyPath = toPath(chartPoints.map((item) => item.fishy));
+    values.forEach((value, index, arr) => {
+      const x = getX(index);
+      const y = getY(value);
+
+      if (index === 0) {
+        segments.push(`M ${x} ${y}`);
+        return;
+      }
+
+      const prevX = getX(index - 1);
+      const prevY = getY(arr[index - 1]);
+      const cx1 = prevX + (x - prevX) / 2;
+      const cy1 = prevY;
+      const cx2 = prevX + (x - prevX) / 2;
+      const cy2 = y;
+
+      segments.push(`C ${cx1} ${cy1} ${cx2} ${cy2} ${x} ${y}`);
+    });
+
+    return segments.join(" ");
+  };
+
+  const buildSmoothAreaPath = (values: number[]) => {
+    if (values.length === 0) return "";
+
+    const curvePath = toSmoothPath(values);
+    const firstX = getX(0);
+    const lastX = getX(values.length - 1);
+    const baselineY = getY(0);
+
+    return `${curvePath} L ${lastX} ${baselineY} L ${firstX} ${baselineY} Z`;
+  };
+
+  const safeValues = chartPoints.map((item) => item.safe);
+  const riskyValues = chartPoints.map((item) => item.risky);
+  const fishyValues = chartPoints.map((item) => item.fishy);
+
+  const safePath = toSmoothPath(safeValues);
+  const riskyPath = toSmoothPath(riskyValues);
+  const fishyPath = toSmoothPath(fishyValues);
+
+  const safeAreaPath = buildSmoothAreaPath(safeValues);
+  const riskyAreaPath = buildSmoothAreaPath(riskyValues);
+  const fishyAreaPath = buildSmoothAreaPath(fishyValues);
 
   const active =
     hoveredIndex !== null && chartPoints[hoveredIndex] ? chartPoints[hoveredIndex] : null;
@@ -928,35 +1505,18 @@ function LiveTrendChart({ points }: { points: TrendPoint[] }) {
             ))}
           </g>
 
-          <path d={safePath} fill="none" stroke="#34d399" strokeWidth="3" />
-          <path d={riskyPath} fill="none" stroke="#fbbf24" strokeWidth="3" />
-          <path d={fishyPath} fill="none" stroke="#fb7185" strokeWidth="3" />
+          <path d={safeAreaPath} fill="#34d399" fillOpacity="0.06" stroke="none" />
+          <path d={riskyAreaPath} fill="#fbbf24" fillOpacity="0.06" stroke="none" />
+          <path d={fishyAreaPath} fill="#fb7185" fillOpacity="0.18" stroke="none" />
+
+          <path d={safePath} fill="none" stroke="#34d399" strokeWidth="2" strokeOpacity="0.8" />
+          <path d={riskyPath} fill="none" stroke="#fbbf24" strokeWidth="2" strokeOpacity="0.8" />
+          <path d={fishyPath} fill="none" stroke="#fb7185" strokeWidth="3" strokeOpacity="1" />
 
           {chartPoints.map((point, index) => {
             const x = getX(index);
             return (
               <g key={`${point.time}-${index}`}>
-                <circle
-                  cx={x}
-                  cy={getY(point.safe)}
-                  r="5"
-                  fill="#34d399"
-                  onMouseEnter={() => setHoveredIndex(index)}
-                />
-                <circle
-                  cx={x}
-                  cy={getY(point.risky)}
-                  r="5"
-                  fill="#fbbf24"
-                  onMouseEnter={() => setHoveredIndex(index)}
-                />
-                <circle
-                  cx={x}
-                  cy={getY(point.fishy)}
-                  r="5"
-                  fill="#fb7185"
-                  onMouseEnter={() => setHoveredIndex(index)}
-                />
                 <text
                   x={x}
                   y={height - 8}
@@ -1619,11 +2179,122 @@ function UsersSection() {
       ];
     }, [profile]);
 
+    const handleDownloadUsers = () => {
+      if (filteredUsers.length === 0) {
+        return;
+      }
+
+      const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const marginLeft = 40;
+      const marginRight = 40;
+      const marginTop = 50;
+      const bottomMargin = 50;
+
+      let y = marginTop;
+
+      const truncate = (value: string, max: number) => {
+        if (value.length <= max) return value;
+        return value.slice(0, max - 1) + "…";
+      };
+
+      doc.setFontSize(16);
+      doc.text("Users Detail Report", marginLeft, y);
+
+      doc.setFontSize(10);
+      const generatedAt = new Date().toLocaleString();
+      y += 18;
+      doc.text(`Generated at: ${generatedAt}`, marginLeft, y);
+      y += 10;
+      doc.text(`Total users in view: ${filteredUsers.length}`, marginLeft, y);
+
+      const headers = [
+        "Name",
+        "User ID",
+        "City",
+        "Risk",
+        "Avg Txn/Day",
+        "Trusted",
+        "Member Since",
+      ];
+
+      const availableWidth = pageWidth - marginLeft - marginRight;
+      const colX = [
+        marginLeft, // Name
+        marginLeft + availableWidth * 0.20, // User ID
+        marginLeft + availableWidth * 0.36, // City
+        marginLeft + availableWidth * 0.50, // Risk
+        marginLeft + availableWidth * 0.62, // Avg Txn/Day
+        marginLeft + availableWidth * 0.74, // Trusted
+        marginLeft + availableWidth * 0.86, // Member Since
+      ];
+
+      const ensureSpace = () => {
+        if (y > pageHeight - bottomMargin) {
+          doc.addPage();
+          y = marginTop;
+
+          // Re-draw table header on new page for clarity
+          doc.setFontSize(9);
+          doc.setFont("helvetica", "bold");
+          headers.forEach((header, index) => {
+            doc.text(header, colX[index], y);
+          });
+          doc.setFont("helvetica", "normal");
+          y += 14;
+        }
+      };
+
+      y += 24;
+
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "bold");
+      headers.forEach((header, index) => {
+        doc.text(header, colX[index], y);
+      });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      y += 14;
+
+      filteredUsers.forEach((user) => {
+        ensureSpace();
+
+        const row = [
+          truncate(user.name, 22),
+          truncate(user.user_id, 18),
+          truncate(user.city, 18),
+          truncate(user.risk_label, 16),
+          user.avg_txn_per_day.toFixed(1),
+          String(user.trusted_devices),
+          new Date(user.member_since).toLocaleDateString(),
+        ];
+
+        row.forEach((value, index) => {
+          doc.text(String(value), colX[index], y);
+        });
+
+        y += 14;
+      });
+
+      doc.save("users-detail.pdf");
+    };
+
   return (
     <section id="users" className="space-y-10">
       <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto space-y-6">
           <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-5 space-y-4">
-            <div className="text-sm font-semibold tracking-wide text-slate-100">Users Overview</div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold tracking-wide text-slate-100">Users Overview</div>
+              <button
+                type="button"
+                onClick={handleDownloadUsers}
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-slate-900/70 px-3 py-1.5 text-[11px] font-medium text-slate-100 hover:bg-slate-900/90"
+              >
+                Download users detail
+              </button>
+            </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
               <div className="rounded-xl border border-white/10 bg-slate-950/65 px-4 py-3">
                 <div className="text-[11px] uppercase tracking-[0.12em] text-slate-400">Users</div>
@@ -2333,6 +3004,264 @@ function AnalyticsSection() {
   );
 }
 
+function TransactionReportSection() {
+  const [rows, setRows] = useState<LiveTransaction[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedCount, setSelectedCount] = useState(10);
+   const [decisionFilter, setDecisionFilter] = useState<"both" | "approved" | "blocked">("both");
+
+  const loadTransactions = async () => {
+    // Guard: require a positive number
+    if (!selectedCount || selectedCount <= 0) {
+      setRows([]);
+      return;
+    }
+
+    // Clamp to backend limits (1-200)
+    const limit = Math.max(1, Math.min(200, selectedCount));
+
+    try {
+      setIsLoading(true);
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+      const response = await fetch(
+        // Fetch a generous number of recent transactions, then filter client-side
+        // so we can honor both the decision filter and the desired count.
+        `${baseUrl}/api/transactions/live?limit=200`
+      );
+
+      if (!response.ok) {
+        throw new Error(`Failed recent transactions: ${response.status}`);
+      }
+
+      const data = (await response.json()) as LiveTransactionsResponse;
+      const all = data.transactions || [];
+
+      let filtered = all;
+      if (decisionFilter === "approved") {
+        filtered = all.filter((row) => row.decision === "APPROVE");
+      } else if (decisionFilter === "blocked") {
+        filtered = all.filter((row) => row.decision === "BLOCK");
+      }
+
+      setRows(filtered.slice(0, limit));
+    } catch {
+      setRows([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const downloadPdf = () => {
+    if (!rows.length) return;
+
+    const doc = new jsPDF();
+    const marginLeft = 14;
+    let currentY = 18;
+
+    doc.setFontSize(16);
+    doc.text("Transaction Report", marginLeft, currentY);
+    currentY += 6;
+
+    const countLabel = rows.length || selectedCount;
+
+    doc.setFontSize(11);
+    doc.text(
+      `Scope: Latest ${countLabel} transactions`,
+      marginLeft,
+      currentY
+    );
+    currentY += 6;
+    doc.text(
+      `Generated: ${new Date().toLocaleString()}`,
+      marginLeft,
+      currentY
+    );
+    currentY += 8;
+
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "bold");
+    doc.text("Txn ID", marginLeft, currentY);
+    // Add extra spacing between Txn ID and Amount so values don't merge
+    doc.text("Amount", marginLeft + 60, currentY);
+    doc.text("Decision", marginLeft + 105, currentY);
+    doc.text("Time", marginLeft + 150, currentY);
+    currentY += 4;
+    doc.setLineWidth(0.3);
+    doc.line(marginLeft, currentY, 195 - marginLeft, currentY);
+    currentY += 5;
+    doc.setFont("helvetica", "normal");
+
+    rows.forEach((row) => {
+      if (currentY > 280) {
+        doc.addPage();
+        currentY = 20;
+      }
+
+      // Use plain "INR" prefix instead of the currency symbol, which can
+      // render incorrectly in some PDF fonts and appear as an extra "1".
+      const amountLabel = `INR ${new Intl.NumberFormat("en-IN", {
+        maximumFractionDigits: 0,
+      }).format(row.amount)}`;
+
+      const timeLabel = new Date(row.timestamp).toLocaleString();
+
+      // Print full transaction ID in its own column
+      doc.text(String(row.txn_id), marginLeft, currentY);
+      // Match the wider spacing used in the header row
+      doc.text(amountLabel, marginLeft + 60, currentY);
+      doc.text(row.decision, marginLeft + 105, currentY);
+      doc.text(timeLabel.substring(0, 19), marginLeft + 150, currentY);
+      currentY += 5;
+    });
+
+    const filename = `transaction-report-latest-${countLabel}.pdf`;
+    doc.save(filename);
+  };
+
+  return (
+    <section id="transaction-report" className="space-y-10">
+      <div className="container max-w-[1220px] w-full px-6 md:px-10 mx-auto space-y-4">
+        <SectionTitle
+          icon={CreditCard}
+          label="Transaction Report"
+          description="View recent transactions across all users and export as PDF."
+        />
+        <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4 text-xs md:text-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="space-y-1">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                  Number of transactions
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={selectedCount}
+                  onChange={(event) =>
+                    setSelectedCount(Number(event.target.value) || 0)
+                  }
+                  placeholder="e.g. 37"
+                  className="w-32 rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-xs md:text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                  Decision filter
+                </div>
+                <select
+                  value={decisionFilter}
+                  onChange={(event) =>
+                    setDecisionFilter(
+                      event.target.value as "both" | "approved" | "blocked"
+                    )
+                  }
+                  className="w-40 rounded-xl border border-white/15 bg-slate-900/70 px-3 py-2 text-xs md:text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+                >
+                  <option value="both">Approved & blocked</option>
+                  <option value="approved">Only approved</option>
+                  <option value="blocked">Only blocked</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={loadTransactions}
+                disabled={isLoading || !selectedCount || selectedCount <= 0}
+                className={cn(
+                  "mt-5 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-medium transition",
+                  isLoading || !selectedCount || selectedCount <= 0
+                    ? "border-slate-500/60 bg-slate-800/80 text-slate-400 cursor-not-allowed"
+                    : "border-emerald-400/70 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25"
+                )}
+              >
+                {isLoading ? "Loading..." : `Load latest ${selectedCount}`}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={downloadPdf}
+              disabled={!rows.length}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-medium transition self-start md:self-auto",
+                !rows.length
+                  ? "border-slate-500/60 bg-slate-800/80 text-slate-400 cursor-not-allowed"
+                  : "border-indigo-400/70 bg-indigo-500/15 text-indigo-100 hover:bg-indigo-500/25"
+              )}
+            >
+              Download PDF
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-white/10 mt-2">
+            <table className="min-w-full text-left align-middle">
+              <thead className="bg-slate-900/85 border-b border-white/10 text-[11px] uppercase tracking-[0.15em] text-slate-500">
+                <tr>
+                  <th className="py-2 px-4">Txn ID</th>
+                  <th className="py-2 px-4">Amount</th>
+                  <th className="py-2 px-4">Decision</th>
+                  <th className="py-2 px-4">Merchant</th>
+                  <th className="py-2 px-4">Location</th>
+                  <th className="py-2 px-4">Time</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {rows.map((row) => (
+                  <tr key={row.txn_id} className="hover:bg-white/5 transition-colors">
+                    <td className="py-2 px-4 font-mono text-[11px] text-slate-300">
+                      {row.txn_id}
+                    </td>
+                    <td className="py-2 px-4 text-emerald-300 font-medium">
+                      {new Intl.NumberFormat("en-IN", {
+                        style: "currency",
+                        currency: "INR",
+                        maximumFractionDigits: 0,
+                      }).format(row.amount)}
+                    </td>
+                    <td className="py-2 px-4">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium",
+                          row.decision === "APPROVE" &&
+                            "bg-emerald-500/15 text-emerald-300 border border-emerald-400/40",
+                          row.decision === "BLOCK" &&
+                            "bg-rose-500/15 text-rose-300 border border-rose-400/40",
+                          row.decision === "REVIEW" &&
+                            "bg-amber-500/15 text-amber-200 border border-amber-400/40"
+                        )}
+                      >
+                        {row.decision}
+                      </span>
+                    </td>
+                    <td className="py-2 px-4 text-slate-300">
+                      {row.merchant_name}
+                    </td>
+                    <td className="py-2 px-4 text-slate-300">
+                      {row.location}
+                    </td>
+                    <td className="py-2 px-4 text-slate-400">
+                      {new Date(row.timestamp).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+                {!rows.length && (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-6 px-4 text-center text-slate-400"
+                    >
+                      No transactions loaded yet. Choose a count and load the latest transactions.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function LocationSection() {
   const fallbackCityStats = useMemo(
     () => [
@@ -2434,8 +3363,8 @@ function LocationSection() {
         <div className="space-y-5">
           <SectionTitle
             icon={Globe2}
-            label="Fraud Heat Map (2D)"
-            description="Real map heat layer for fraudulent transactions, with globe retained below."
+            label="Fraud Heatmap"
+            description=""
           />
 
           <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-5">
@@ -2473,11 +3402,6 @@ function FraudHeatMapMap({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between text-xs text-slate-400">
-        <span>Fraud-only heat intensity</span>
-        <span>Real map tiles</span>
-      </div>
-
       <div className="rounded-2xl border border-white/10 overflow-hidden">
         <RLMapContainer center={indiaCenter} zoom={5} className="h-[520px] w-full" scrollWheelZoom>
           <RLTileLayer

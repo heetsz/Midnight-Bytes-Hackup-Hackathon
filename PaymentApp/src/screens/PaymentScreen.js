@@ -17,10 +17,6 @@ export default function PaymentScreen({ route, navigation }) {
   const [merchant, setMerchant] = useState('Midnight Bytes Store');
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState('');
-  const [awaitingOtp, setAwaitingOtp] = useState(false);
-  const [otp, setOtp] = useState('');
-  const [otpError, setOtpError] = useState('');
-  const [generatedOtp, setGeneratedOtp] = useState('');
 
   const expiryDigits = expiry.replace(/\D/g, '');
   const cvvDigits = cvv.replace(/\D/g, '');
@@ -60,22 +56,14 @@ export default function PaymentScreen({ route, navigation }) {
           setProcessing(false);
           return;
         }
-
-        // Biometric passed – now move to OTP verification step before completing payment
-        const code = String(Math.floor(100000 + Math.random() * 900000));
-        setGeneratedOtp(code);
-        setAwaitingOtp(true);
-        setOtp('');
-        setOtpError('');
-        setProcessing(false);
-        return;
       }
-      // For amounts up to and including 1000, continue with normal fraud decision flow
+      // Continue with normal fraud decision flow after any required biometric check
       const decision = await assessTransaction({
         name: user?.name,
         location: user?.location,
         amount,
         cardType,
+        merchant,
       });
 
       if (decision.decision === 'SAFE') {
@@ -112,65 +100,11 @@ export default function PaymentScreen({ route, navigation }) {
         });
       }
     } catch (e) {
-      setError('Something went wrong. Please try again.');
+      console.error('Payment error', e);
+      const message = e && typeof e.message === 'string' ? e.message : 'Something went wrong. Please try again.';
+      setError(message);
     } finally {
       setProcessing(false);
-    }
-  };
-
-  const onConfirmOtp = async () => {
-    const trimmedOtp = otp.trim();
-
-    if (trimmedOtp.length !== 6 || trimmedOtp !== generatedOtp) {
-      setOtpError('Enter the 6-digit OTP sent to you');
-      return;
-    }
-
-    try {
-      setError('');
-      setOtpError('');
-      setProcessing(true);
-
-      const decision = await assessTransaction({
-        name: user?.name,
-        location: user?.location,
-        amount,
-        cardType,
-      });
-
-      if (decision.decision === 'SAFE' || decision.decision === 'MODERATE') {
-        // After biometric + OTP, treat safe or moderate as approved after checks
-        navigation.replace('Result', {
-          status: 'success',
-          title: 'Payment approved after checks',
-          message: 'Biometric and OTP verification passed. Your payment is complete.',
-          meta: {
-            amount,
-            merchant,
-            cardType,
-            risk: decision.decision === 'SAFE' ? 'Safe' : 'Moderate',
-            reason: decision.reason,
-          },
-        });
-      } else {
-        navigation.replace('Result', {
-          status: 'blocked',
-          title: 'Transaction blocked',
-          message: 'Your bank flagged this payment as high risk. They will contact you shortly.',
-          meta: {
-            amount,
-            merchant,
-            cardType,
-            risk: 'High',
-            reason: decision.reason,
-          },
-        });
-      }
-    } catch (e) {
-      setError('Something went wrong while verifying the OTP. Please try again.');
-    } finally {
-      setProcessing(false);
-      setAwaitingOtp(false);
     }
   };
 
@@ -298,49 +232,15 @@ export default function PaymentScreen({ route, navigation }) {
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-            {awaitingOtp ? (
-              <>
-                <Text style={styles.label}>Enter OTP</Text>
-                <TextInput
-                  style={styles.input}
-                  value={otp}
-                  onChangeText={(value) => {
-                    const digits = value.replace(/\D/g, '');
-                    setOtp(digits.slice(0, 6));
-                    if (otpError) {
-                      setOtpError('');
-                    }
-                  }}
-                  keyboardType="numeric"
-                  placeholder="••••••"
-                  placeholderTextColor="#64748b"
-                />
-                {otpError ? <Text style={styles.errorText}>{otpError}</Text> : null}
-                <Text style={styles.otpHint}>
-                  For demo we "send" an SMS OTP here: {generatedOtp}
-                </Text>
-
-                <TouchableOpacity
-                  style={[styles.button, processing && styles.buttonDisabled]}
-                  onPress={onConfirmOtp}
-                  disabled={processing}
-                >
-                  <Text style={styles.buttonText}>
-                    {processing ? 'Verifying…' : 'Verify OTP & Pay'}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <TouchableOpacity
-                style={[styles.button, !canPay && styles.buttonDisabled]}
-                onPress={onPay}
-                disabled={!canPay}
-              >
-                <Text style={styles.buttonText}>
-                  {processing ? 'Checking with bank…' : `Pay ₹${amount || '0'}`}
-                </Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={[styles.button, !canPay && styles.buttonDisabled]}
+              onPress={onPay}
+              disabled={!canPay}
+            >
+              <Text style={styles.buttonText}>
+                {processing ? 'Checking with bank…' : `Pay ₹${amount || '0'}`}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>

@@ -62,6 +62,8 @@ class DeviceRegisterRequest(BaseModel):
 class FrontendPayload(BaseModel):
     transaction_amt: float = Field(gt=0)
     client_ip: str
+    merchant_name: str | None = None
+    location: str | None = None
 
 
 class TransactionProcessRequest(BaseModel):
