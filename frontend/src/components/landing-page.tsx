@@ -4,7 +4,6 @@ import { GlobeAnalytics } from "@/components/ui/cobe-globe-analytics";
 import { LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Circle, CircleMarker, MapContainer, Popup, TileLayer } from "react-leaflet";
-import * as Recharts from "recharts";
 import {
   Bar as RechartsBar,
   BarChart,
@@ -2530,11 +2529,6 @@ function UsersSection() {
                               color: "#e2e8f0",
                             }}
                           />
-                          <RechartsBar dataKey="count" radius={[8, 8, 0, 0]}>
-                            {loginBarData.map((entry, index) => (
-                              <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
-                            ))}
-                          </RechartsBar>
                           <RechartsBar dataKey="count" radius={[8, 8, 0, 0]}>
                             {loginBarData.map((entry, index) => (
                               <Cell key={`${entry.label}-${index}`} fill={entry.label === "Success" ? "#34d399" : "#fb7185"} />
