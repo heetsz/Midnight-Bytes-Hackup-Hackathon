@@ -14,6 +14,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS_ROOT = PROJECT_ROOT.parent / "Models"
 PIPELINE_FILE = MODELS_ROOT / "run_pipeline_phase_refactored.py"
 
+INDIAN_LOCATIONS = [
+    "Mumbai",
+    "Delhi",
+    "Bengaluru",
+    "Hyderabad",
+    "Chennai",
+    "Kolkata",
+    "Pune",
+    "Ahmedabad",
+    "Jaipur",
+    "Lucknow",
+]
+
 
 @dataclass
 class ModelRowContext:
@@ -85,6 +98,10 @@ def _default_decision_from_prob(prob: float) -> str:
     return "block"
 
 
+def _random_indian_location() -> str:
+    return str(np.random.choice(INDIAN_LOCATIONS))
+
+
 def generate_model_row_context() -> ModelRowContext:
     df = _load_feature_store()
     if df is None or df.empty:
@@ -93,7 +110,7 @@ def generate_model_row_context() -> ModelRowContext:
         return ModelRowContext(
             transaction_amt=round(amount, 2),
             merchant_name="Model Feed Merchant",
-            location="Model Feed Location",
+            location=_random_indian_location(),
             card1=None,
             d1=None,
             d2=None,
@@ -153,8 +170,10 @@ def generate_model_row_context() -> ModelRowContext:
         out_row.get("location")
         or out_row.get("addr1")
         or out_row.get("city")
-        or "Model Feed Location"
+        or _random_indian_location()
     )
+    if location.strip().lower() in {"model feed location", "unknown", "na", "n/a"}:
+        location = _random_indian_location()
 
     v_cols = _extract_series_values(out_row, r"V(\d+)", float)
     c_cols = _extract_series_values(out_row, r"C(\d+)", float)
