@@ -23,7 +23,28 @@ export default function LoginScreen({ navigation }) {
 
         const loc = await Location.getCurrentPositionAsync({});
         setCoords({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-        setLocationText(`${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)}`);
+
+        // Prefer a human-friendly city name instead of raw coordinates
+        try {
+          const places = await Location.reverseGeocodeAsync({
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+          });
+
+          if (places && places.length > 0) {
+            const place = places[0];
+            const cityParts = [place.city, place.region, place.country]
+              .filter(Boolean)
+              .slice(0, 2);
+            const cityLabel = cityParts.join(', ');
+            setLocationText(cityLabel || 'Unknown city');
+          } else {
+            setLocationText('Unknown city');
+          }
+        } catch (geoErr) {
+          console.warn('reverseGeocode error', geoErr);
+          setLocationText('Unknown city');
+        }
       } catch (e) {
         setError('Unable to fetch location.');
         setLocationText('Location unavailable');
