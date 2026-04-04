@@ -432,25 +432,37 @@ function LiveTransactionsFeedSection() {
 
   useEffect(() => {
     if (rows.length === 0) {
+      setTrend([]);
       return;
     }
 
-    const updateTrend = () => {
-      const safe = rows.filter((row) => row.fraud_score < 40).length;
-      const risky = rows.filter((row) => row.fraud_score >= 40 && row.fraud_score < 70).length;
-      const fishy = rows.filter((row) => row.fraud_score >= 70).length;
-      const time = new Date().toLocaleTimeString([], {
+    const sorted = [...rows]
+      .filter((row) => !Number.isNaN(Date.parse(row.timestamp)))
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
+    const buckets = new Map<string, TrendPoint>();
+
+    for (const row of sorted) {
+      const time = new Date(row.timestamp).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       });
 
-      setTrend((prev) => [...prev.slice(-11), { time, safe, risky, fishy }]);
-    };
+      if (!buckets.has(time)) {
+        buckets.set(time, { time, safe: 0, risky: 0, fishy: 0 });
+      }
 
-    updateTrend();
-    const trendId = window.setInterval(updateTrend, 3000);
+      const bucket = buckets.get(time)!;
+      if (row.fraud_score < 40) {
+        bucket.safe += 1;
+      } else if (row.fraud_score < 70) {
+        bucket.risky += 1;
+      } else {
+        bucket.fishy += 1;
+      }
+    }
 
-    return () => window.clearInterval(trendId);
+    setTrend(Array.from(buckets.values()).slice(-12));
   }, [rows]);
 
   useEffect(() => {
