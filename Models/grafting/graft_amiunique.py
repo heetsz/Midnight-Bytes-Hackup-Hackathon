@@ -101,50 +101,73 @@ def build_device_registry(amiunique_path: str) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. PARTIAL MATCH — same browser, different resolution
 # ─────────────────────────────────────────────────────────────────────────────
-
-def make_partial_hash(row: pd.Series) -> str:
-    raw = "|".join([
-        str(row.get("id_31",          "")),
-        str(row.get("webgl_vendor",   "")),
-        str(row.get("tcp_os_signature","")),
-    ])
-    return "DP_" + hashlib.md5(raw.encode()).hexdigest()[:16]
-
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. GRAFT ONTO IEEE-CIS DATAFRAME
+# 3. GRAFT ONTO IEEE-CIS DATAFRAME (FIXED)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def make_shared_key(row: pd.Series) -> str:
+    """Creates a join key based ONLY on features present in both datasets."""
+    return "|".join([
+        str(row.get("id_31", "")).strip(),
+        str(row.get("id_33", "")).strip(),
+        str(row.get("DeviceType", "")).strip()
+    ]).lower()
 
 def graft_device_features(ieee_df: pd.DataFrame, registry: pd.DataFrame) -> pd.DataFrame:
-    # Inside graft_device_features
+    # 1. Create the Shared Join Key on both dataframes
+    ieee_df["shared_match_key"] = ieee_df.apply(make_shared_key, axis=1)
+    registry["shared_match_key"] = registry.apply(make_shared_key, axis=1)
+    
+    # Deduplicate AmIUnique registry on the shared key to allow a clean Left Join
+    reg_unique = registry.drop_duplicates("shared_match_key").copy()
+    
+    # 2. Graft the rich AmIUnique features onto IEEE-CIS
+    # Drop overlapping columns from registry to prevent '_x' and '_y' suffixes
+    cols_to_drop = ["id_31", "id_33", "DeviceType", "DeviceInfo", "device_fp_hash", "device_obs_count"]
+    reg_merge = reg_unique.drop(columns=[c for c in cols_to_drop if c in reg_unique.columns])
+    
+    ieee_df = ieee_df.merge(reg_merge, on="shared_match_key", how="left")
+    
+    # Fill any remaining missing features with a sensible default before hashing
     for col in DEVICE_FP_COLS:
-        ieee_df[col] = ieee_df[col].replace("", "MISSING_FP").fillna("MISSING_FP")
-
-    ieee_df["device_partial_hash"] = ieee_df.apply(make_partial_hash, axis=1)
-
-    exact_hashes   = set(registry["device_fp_hash"])
-    partial_hashes = set(registry.apply(make_partial_hash, axis=1))
-
-    def _match_type(row):
-        if row["device_fp_hash"] in exact_hashes:
-            return "exact"
-        elif row["device_partial_hash"] in partial_hashes:
-            return "partial"
-        return "none"
-
-    ieee_df["device_match_type"] = ieee_df.apply(_match_type, axis=1)
-
-    match_map = {"none": 0, "partial": 1, "exact": 2}
-    ieee_df["device_match_ord"] = ieee_df["device_match_type"].map(match_map)
-
-    reg_subset = registry[["device_fp_hash","device_obs_count"]].copy()
-    ieee_df = ieee_df.merge(reg_subset, on="device_fp_hash", how="left")
-    ieee_df["device_obs_count"] = ieee_df["device_obs_count"].fillna(0)
-
+        if col not in ieee_df.columns:
+            ieee_df[col] = "UNKNOWN"
+        else:
+            ieee_df[col] = ieee_df[col].fillna("UNKNOWN").astype(str)
+            
+    # 3. NOW calculate the final robust device_fp_hash for the IEEE data
+    ieee_df["device_fp_hash"] = ieee_df.apply(make_device_fp_hash, axis=1)
+    
+    # 4. CALCULATE TRUE USER DEVICE HISTORY (device_match_ord)
+    # Sort chronologically to ensure cumcount represents history correctly
+    if "TransactionDT" in ieee_df.columns:
+        ieee_df = ieee_df.sort_values(["user_key", "TransactionDT"])
+    else:
+        ieee_df = ieee_df.sort_values(["user_key", "TransactionID"])
+        
+    # Count how many times this user has used this specific device BEFORE this transaction
+    ieee_df["user_device_history_count"] = ieee_df.groupby(["user_key", "device_fp_hash"]).cumcount()
+    
+    def _assign_match_ord(count):
+        if count == 0: return 0      # 0 = First time user is seen on this device
+        elif count < 3: return 1     # 1 = Seen recently
+        else: return 2               # 2 = Trusted / Regular device
+        
+    ieee_df["device_match_ord"] = ieee_df["user_device_history_count"].apply(_assign_match_ord)
+    
+    # Map back to strings for your console log
+    match_map_rev = {0: "none", 1: "partial", 2: "exact"}
+    ieee_df["device_match_type"] = ieee_df["device_match_ord"].map(match_map_rev)
+    
+    # Calculate global device novelty (how rare is this device overall?)
+    ieee_df["device_obs_count"] = ieee_df.groupby("device_fp_hash")["device_fp_hash"].transform("count")
     ieee_df["device_novelty"] = 1.0 / np.log1p(ieee_df["device_obs_count"] + 1)
-
+    
+    # Cleanup
+    ieee_df = ieee_df.drop(columns=["shared_match_key", "user_device_history_count"])
+    
     print(f"[AmIUnique] Match types: {ieee_df['device_match_type'].value_counts().to_dict()}")
     return ieee_df
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. DEVICE-LEVEL FRAUD RATE
 # ─────────────────────────────────────────────────────────────────────────────
