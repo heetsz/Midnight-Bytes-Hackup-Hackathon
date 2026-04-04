@@ -158,6 +158,13 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         device_dist_score=device_dist_score,
         location=payload.frontend_payload.location,
         known_device=known_index is not None,
+        card1=payload.card1,
+        d1=payload.d1,
+        d2=payload.d2,
+        d3=payload.d3,
+        v_cols=payload.v_cols,
+        c_cols=payload.c_cols,
+        m_cols=payload.m_cols,
     )
     model_decision = inference.model_decision
     calibrated_prob = inference.calibrated_prob
@@ -183,6 +190,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         "model_decision": model_decision,
         "calibrated_prob": calibrated_prob,
         "stacker_score": stacker_score,
+        "model_source": inference.model_source,
         "base_outputs": inference.base_outputs,
         "queue_outputs": inference.queue_outputs,
         "why_flagged": inference.why_flagged,
@@ -248,6 +256,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         "decision": model_decision,
         "calibrated_prob": calibrated_prob,
         "stacker_score": stacker_score,
+        "model_source": inference.model_source,
         "why_flagged": inference.why_flagged,
         "timestamp": now,
     }

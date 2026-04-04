@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 import math
+import os
 import sys
+from typing import Any
 
 import numpy as np
 
@@ -20,9 +21,170 @@ except Exception:
     V_COLS, C_COLS, D_COLS, M_COLS = [], [], [], []
 
 try:
+    import lightgbm as lgb  # type: ignore
+except Exception:  # pragma: no cover
+    lgb = None
+
+try:
     import shap  # type: ignore
 except Exception:  # pragma: no cover
     shap = None
+
+try:
+    import torch  # type: ignore
+except Exception:  # pragma: no cover
+    torch = None
+
+try:
+    from models.models import PlattCalibrator, TabNetEncoder  # type: ignore
+except Exception:  # pragma: no cover
+    PlattCalibrator = None
+    TabNetEncoder = None
+
+
+STACKING_COLS = [
+    "tabnet_logit",
+    "device_dist_score",
+    "seq_anomaly_score",
+    "paysim_boost",
+    "recon_error",
+    "ring_score",
+    "txn_graph_logit",
+    "synth_id_prob",
+    "ato_prob",
+]
+
+
+def _load_stacker() -> Any:
+    if lgb is None:
+        return None
+    stacker_path = MODELS_ROOT / "models" / "lgbm_stacker.lgb"
+    if not stacker_path.exists():
+        return None
+    try:
+        return lgb.Booster(model_file=str(stacker_path))
+    except Exception:
+        return None
+
+
+USE_STACKER_ARTIFACT = os.getenv("USE_STACKER_ARTIFACT", "0").strip().lower() in {"1", "true", "yes", "on"}
+_STACKER = _load_stacker() if USE_STACKER_ARTIFACT else None
+
+
+def _is_stacker_healthy(booster: Any) -> bool:
+    try:
+        probe = np.zeros((1, len(STACKING_COLS)), dtype=np.float32)
+        pred = booster.predict(probe)
+        return pred is not None and len(pred) == 1
+    except Exception:
+        return False
+
+
+if _STACKER is not None and not _is_stacker_healthy(_STACKER):
+    _STACKER = None
+
+
+class ModelsDirectoryRuntime:
+    def __init__(self) -> None:
+        self.tabnet = None
+        self.calibrator = None
+        self.tabnet_in_dim = 0
+        self.loaded = False
+
+        if torch is None or TabNetEncoder is None:
+            return
+
+        try:
+            models_dir = MODELS_ROOT / "models"
+            tabnet_path = models_dir / "tabnet_finetuned.pt"
+            if not tabnet_path.exists():
+                tabnet_path = models_dir / "tabnet_pretrained.pt"
+            if not tabnet_path.exists():
+                return
+
+            state = torch.load(tabnet_path, map_location="cpu")
+            in_dim = int(state["bn_input.weight"].shape[0])
+            embed_dim = int(state["classifier.weight"].shape[1])
+
+            model = TabNetEncoder(in_dim=in_dim, embed_dim=embed_dim)
+            model.load_state_dict(state, strict=False)
+            model.eval()
+
+            calibrator = None
+            calibrator_path = models_dir / "platt_calibrator.pt"
+            if calibrator_path.exists() and PlattCalibrator is not None:
+                calibrator = PlattCalibrator()
+                calibrator.load_state_dict(torch.load(calibrator_path, map_location="cpu"), strict=False)
+                calibrator.eval()
+
+            self.tabnet = model
+            self.calibrator = calibrator
+            self.tabnet_in_dim = in_dim
+            self.loaded = True
+        except Exception:
+            self.loaded = False
+
+    def _build_input(
+        self,
+        *,
+        amount: float,
+        amt_zscore: float,
+        delta_t_norm: float,
+        device_novelty: float,
+        device_dist_score: float,
+        m_fail_count: int,
+        txn_rank: int,
+        card1: int | None,
+        d1: float | None,
+        d2: float | None,
+        d3: float | None,
+        v_cols: list[float] | None,
+        c_cols: list[float] | None,
+        m_cols: list[int] | None,
+    ) -> np.ndarray:
+        values = [
+            float(amount),
+            float(amt_zscore),
+            float(delta_t_norm),
+            float(device_novelty),
+            float(device_dist_score),
+            float(m_fail_count),
+            float(txn_rank),
+            float(card1 or 0),
+            float(d1 or 0.0),
+            float(d2 or 0.0),
+            float(d3 or 0.0),
+        ]
+        values.extend(float(x) for x in (v_cols or []))
+        values.extend(float(x) for x in (c_cols or []))
+        values.extend(float(x) for x in (m_cols or []))
+
+        vec = np.asarray(values, dtype=np.float32)
+        if vec.shape[0] < self.tabnet_in_dim:
+            vec = np.pad(vec, (0, self.tabnet_in_dim - vec.shape[0]), mode="constant")
+        elif vec.shape[0] > self.tabnet_in_dim:
+            vec = vec[: self.tabnet_in_dim]
+        return vec
+
+    def predict(self, **kwargs: Any) -> tuple[float, float, str] | None:
+        if not self.loaded or self.tabnet is None or torch is None:
+            return None
+
+        try:
+            vec = self._build_input(**kwargs)
+            with torch.no_grad():
+                out = self.tabnet(torch.tensor(vec[None, :], dtype=torch.float32))
+                logit = float(out["logit"].item())
+                if self.calibrator is not None:
+                    prob = float(self.calibrator(torch.tensor([logit], dtype=torch.float32)).item())
+                    return logit, prob, "models_dir_tabnet_calibrated"
+                prob = float(1.0 / (1.0 + math.exp(-logit)))
+                return logit, prob, "models_dir_tabnet_raw"
+        except Exception:
+            return None
+
+
+_MODELS_RUNTIME = ModelsDirectoryRuntime()
 
 
 @dataclass
@@ -33,6 +195,7 @@ class InferenceOutput:
     base_outputs: dict[str, float]
     queue_outputs: dict[str, float]
     why_flagged: str
+    model_source: str
 
 
 def _sigmoid(x: float) -> float:
@@ -40,9 +203,9 @@ def _sigmoid(x: float) -> float:
 
 
 def _decision_from_prob(prob: float) -> str:
-    if prob >= 0.75:
+    if prob >= 0.70:
         return "block"
-    if prob >= 0.4:
+    if prob >= 0.30:
         return "mfa"
     return "approve"
 
@@ -56,6 +219,12 @@ def _manual_shap_like(features: np.ndarray, feature_names: list[str], weights: n
     impacts = features * weights
     order = np.argsort(np.abs(impacts))[::-1]
     return [(feature_names[idx], float(impacts[idx])) for idx in order]
+
+
+def _manual_stacker_impacts(stacker_features: np.ndarray, feature_names: list[str]) -> list[tuple[str, float]]:
+    # Fallback importance proxy when tree SHAP is unavailable.
+    order = np.argsort(np.abs(stacker_features))[::-1]
+    return [(feature_names[idx], float(stacker_features[idx])) for idx in order]
 
 
 def _try_shap_explain(features: np.ndarray, feature_names: list[str], weights: np.ndarray, bias: float) -> list[tuple[str, float]]:
@@ -77,6 +246,25 @@ def _try_shap_explain(features: np.ndarray, feature_names: list[str], weights: n
         return _manual_shap_like(features, feature_names, weights)
 
 
+def _try_stacker_shap_explain(stacker_features: np.ndarray) -> list[tuple[str, float]]:
+    if _STACKER is None:
+        return _manual_stacker_impacts(stacker_features, STACKING_COLS)
+    if shap is None:
+        return _manual_stacker_impacts(stacker_features, STACKING_COLS)
+
+    try:
+        explainer = shap.TreeExplainer(_STACKER)
+        values = explainer.shap_values(stacker_features.reshape(1, -1))
+        if isinstance(values, list):
+            arr = np.array(values[-1])[0]
+        else:
+            arr = np.array(values)[0]
+        order = np.argsort(np.abs(arr))[::-1]
+        return [(STACKING_COLS[idx], float(arr[idx])) for idx in order]
+    except Exception:
+        return _manual_stacker_impacts(stacker_features, STACKING_COLS)
+
+
 def _render_explanation(
     top_impacts: list[tuple[str, float]],
     amount: float,
@@ -91,6 +279,14 @@ def _render_explanation(
         "device_dist_score": "device embedding distance",
         "M_fail_count": "recent failed attempts",
         "txn_rank_norm": "transaction velocity",
+        "tabnet_logit": "tabular fraud score",
+        "seq_anomaly_score": "sequence anomaly",
+        "paysim_boost": "behavior transfer signal",
+        "recon_error": "autoencoder reconstruction error",
+        "ring_score": "fraud ring linkage",
+        "txn_graph_logit": "graph fraud embedding score",
+        "synth_id_prob": "synthetic identity probability",
+        "ato_prob": "account takeover probability",
     }
 
     top = [pretty.get(name, name) for name, _ in top_impacts[:3]]
@@ -121,7 +317,15 @@ def run_inference(
     device_dist_score: float,
     location: str,
     known_device: bool,
+    card1: int | None = None,
+    d1: float | None = None,
+    d2: float | None = None,
+    d3: float | None = None,
+    v_cols: list[float] | None = None,
+    c_cols: list[float] | None = None,
+    m_cols: list[int] | None = None,
 ) -> InferenceOutput:
+    global _STACKER
     # LightGBM-style linear blend inspired by Model H stacker inputs.
     feature_map = {
         "amt_zscore": float(min(6.0, max(0.0, amt_zscore))),
@@ -136,19 +340,79 @@ def run_inference(
     weights = np.array([0.34, 0.27, 0.33, 0.22, 0.11, 0.08], dtype=np.float32)
     bias = -1.15
 
-    logit = float(features @ weights + bias)
-    stacker_score = float(min(1.0, max(0.0, _sigmoid(logit))))
-    calibrated_prob = float(min(1.0, max(0.0, 0.04 + 0.92 * stacker_score)))
-    model_decision = _decision_from_prob(calibrated_prob)
-
     seq_anomaly_score = float(min(1.0, 0.45 * feature_map["amt_zscore"] / 3.0 + 0.55 * feature_map["delta_t_norm"]))
     ato_prob = float(min(1.0, 0.55 * feature_map["device_novelty"] + 0.45 * feature_map["device_dist_score"]))
     synth_id_prob = float(min(1.0, 0.35 * feature_map["M_fail_count"] / 5.0 + 0.35 * feature_map["device_novelty"] + 0.3 * feature_map["txn_rank_norm"]))
     recon_error = float(0.4 + 2.6 * seq_anomaly_score)
-    tabnet_logit = float(-2.1 + 4.6 * ato_prob)
+
+    model_source = "fallback_linear"
+    models_pred = _MODELS_RUNTIME.predict(
+        amount=amount,
+        amt_zscore=feature_map["amt_zscore"],
+        delta_t_norm=feature_map["delta_t_norm"],
+        device_novelty=feature_map["device_novelty"],
+        device_dist_score=feature_map["device_dist_score"],
+        m_fail_count=int(feature_map["M_fail_count"]),
+        txn_rank=txn_rank,
+        card1=card1,
+        d1=d1,
+        d2=d2,
+        d3=d3,
+        v_cols=v_cols,
+        c_cols=c_cols,
+        m_cols=m_cols,
+    )
+    if models_pred is not None:
+        tabnet_logit, model_prob, model_source = models_pred
+    else:
+        tabnet_logit = float(-2.1 + 4.6 * ato_prob)
+        model_prob = None
+
     gnn_logit = float(-2.4 + 4.0 * feature_map["device_dist_score"])
 
-    top_impacts = _try_shap_explain(features, feature_names, weights, bias)
+    # Approximate missing stacker inputs when upstream models are not online.
+    paysim_boost = float(min(1.0, 0.15 + 0.85 * seq_anomaly_score))
+    ring_score = float(min(1.0, 0.25 * feature_map["device_dist_score"] + 0.75 * synth_id_prob))
+    txn_graph_logit = float(-2.0 + 4.2 * ring_score)
+
+    stacker_features = np.array(
+        [
+            tabnet_logit,
+            feature_map["device_dist_score"],
+            seq_anomaly_score,
+            paysim_boost,
+            recon_error,
+            ring_score,
+            txn_graph_logit,
+            synth_id_prob,
+            ato_prob,
+        ],
+        dtype=np.float32,
+    )
+
+    used_stacker_artifact = False
+    if _STACKER is not None:
+        try:
+            raw_prob = float(_STACKER.predict(stacker_features.reshape(1, -1))[0])
+            used_stacker_artifact = True
+            model_source = "models_dir_lgbm_stacker"
+        except Exception:
+            # Fail closed: disable broken artifact for the remaining process lifetime.
+            _STACKER = None
+            raw_prob = float(model_prob if model_prob is not None else _sigmoid(float(features @ weights + bias)))
+    else:
+        raw_prob = float(model_prob if model_prob is not None else _sigmoid(float(features @ weights + bias)))
+
+    # If model outputs margins/logits, normalize to probability.
+    normalized_prob = float(_sigmoid(raw_prob)) if raw_prob < 0.0 or raw_prob > 1.0 else raw_prob
+    stacker_score = float(min(1.0, max(0.0, normalized_prob)))
+    calibrated_prob = float(min(1.0, max(0.0, stacker_score)))
+    model_decision = _decision_from_prob(calibrated_prob)
+
+    if _STACKER is not None:
+        top_impacts = _try_stacker_shap_explain(stacker_features)
+    else:
+        top_impacts = _try_shap_explain(features, feature_names, weights, bias)
     why_flagged = _render_explanation(top_impacts, amount, location, known_device, model_decision)
 
     return InferenceOutput(
@@ -167,4 +431,5 @@ def run_inference(
             "tabnet_logit": round(tabnet_logit, 6),
         },
         why_flagged=why_flagged,
+        model_source="lgbm_stacker_artifact" if used_stacker_artifact else model_source,
     )
