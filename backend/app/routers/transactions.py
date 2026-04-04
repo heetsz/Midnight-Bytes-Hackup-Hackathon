@@ -1,11 +1,13 @@
 import hashlib
 import json
 import math
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db import get_db
+from app.services.model_row_provider import generate_model_row_context
 from app.services.model_inference import run_inference
 from app.services.transaction_stream import transaction_stream
 from app.schemas import TransactionProcessRequest
@@ -15,8 +17,25 @@ router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 
 def _hash_fingerprint(payload: TransactionProcessRequest) -> str:
-    raw = json.dumps(payload.fingerprint.model_dump(), sort_keys=True, separators=(",", ":"))
+    fp = payload.fingerprint.model_dump() if payload.fingerprint is not None else {
+        "id_31_idx": 0,
+        "id_33_idx": 0,
+        "DeviceType_idx": 0,
+        "DeviceInfo_idx": 0,
+        "os_browser_idx": 0,
+        "screen_width": 0,
+        "screen_height": 0,
+        "hardware_concurrency": 0,
+    }
+    raw = json.dumps(fp, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _derive_user_key(name: str, email: str) -> str:
+    stem = re.sub(r"[^a-z0-9]+", "-", (name or "user").strip().lower()).strip("-")
+    if not stem:
+        stem = "user"
+    return f"{stem}-{hashlib.sha1(email.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _ui_decision(decision: str) -> str:
@@ -28,7 +47,7 @@ def _ui_decision(decision: str) -> str:
 
 
 def _to_live_transaction(item: dict, user: dict) -> dict:
-    user_key = item.get("user_key", "unknown")
+    user_key = item.get("user_key") or ""
     frontend_payload = item.get("frontend_payload", {})
     decision = item.get("pipeline_results", {}).get("model_decision", "approve")
     fraud_score = int(item.get("pipeline_results", {}).get("calibrated_prob", 0) * 100)
@@ -38,13 +57,22 @@ def _to_live_transaction(item: dict, user: dict) -> dict:
         "txn_id": str(item.get("_id")),
         "user_id": user_key,
         "username": user.get("name", user_key),
+        "email": user.get("email", ""),
         "amount": float(frontend_payload.get("transaction_amt", 0)),
         "fraud_score": fraud_score,
         "decision": _ui_decision(decision),
-        "merchant_name": frontend_payload.get("merchant_name", "Unknown Merchant"),
+        "merchant_name": frontend_payload.get("merchant_name") or "",
         "timestamp": item.get("timestamp"),
-        "location": frontend_payload.get("location") or user.get("city", "Unknown"),
+        "location": frontend_payload.get("location") or user.get("city") or "",
         "why_flagged": why_flagged,
+        "model_source": item.get("pipeline_results", {}).get("model_source"),
+        "stacker_score": item.get("pipeline_results", {}).get("stacker_score"),
+        "calibrated_prob": item.get("pipeline_results", {}).get("calibrated_prob"),
+        "raw_fraud_score": item.get("pipeline_results", {}).get("raw_fraud_score"),
+        "base_outputs": item.get("pipeline_results", {}).get("base_outputs", {}),
+        "queue_outputs": item.get("pipeline_results", {}).get("queue_outputs", {}),
+        "backend_snapshot": item.get("backend_snapshot", {}),
+        "source_transaction_id": item.get("pipeline_results", {}).get("source_transaction_id", ""),
     }
 
 
@@ -64,7 +92,7 @@ async def live_transactions(
 
     transactions = []
     for item in rows:
-        user_key = item.get("user_key", "unknown")
+        user_key = item.get("user_key") or ""
         user = users_map.get(user_key, {})
         transactions.append(_to_live_transaction(item, user))
 
@@ -86,6 +114,15 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
     now = utc_now()
 
     try:
+        model_row = generate_model_row_context()
+
+        user_key = payload.user_key
+        if not user_key and payload.email:
+            user_key = _derive_user_key(payload.name or "user", payload.email)
+
+        if not user_key:
+            raise HTTPException(status_code=400, detail="Provide user_key or email")
+
         # Trip 1: hash + lookup/insert device
         device_hash = _hash_fingerprint(payload)
         device = await db.devices.find_one({"device_hash": device_hash})
@@ -94,12 +131,31 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
                 {
                     "device_hash": device_hash,
                     "created_at": now,
-                    "fingerprint": payload.fingerprint.model_dump(),
+                    "fingerprint": payload.fingerprint.model_dump() if payload.fingerprint else {},
                 }
             )
 
         # Trip 2: user enrichment with embedded fields
-        user = await db.users.find_one({"user_key": payload.user_key})
+        user = await db.users.find_one({"user_key": user_key})
+        if not user and payload.email:
+            user = await db.users.find_one({"email": payload.email})
+        if not user and payload.name and payload.email:
+            user_doc = {
+                "user_key": user_key,
+                "name": payload.name,
+                "email": payload.email,
+                "phone_no": "",
+                "city": "",
+                "created_at": now,
+                "usual_login_hour": 10,
+                "user_txn_count": 0,
+                "device_centroid": [],
+                "known_devices": [],
+                "recent_behavior_seq": [],
+                "transaction_ids": [],
+            }
+            await db.users.insert_one(user_doc)
+            user = user_doc
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -124,7 +180,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
 
         # Trip 3: previous transaction context
         last_txn = await db.transactions.find_one(
-            {"user_key": payload.user_key},
+            {"user_key": user_key},
             sort=[("timestamp", -1)],
         )
 
@@ -138,7 +194,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
 
         delta_t_norm = min(1.0, delta_t / 86400.0)
 
-        amount = payload.frontend_payload.transaction_amt
+        amount = float(model_row.transaction_amt)
         base_avg = float(last_txn.get("frontend_payload", {}).get("transaction_amt", amount)) if last_txn else amount
         denom = max(1.0, base_avg)
         amt_zscore = abs((amount - base_avg) / denom)
@@ -149,11 +205,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         novelty = 1.0 if known_index is None else 0.0
         device_dist_score = min(1.0, novelty + 0.05 * max(0, min(4, m_fail_count)))
 
-        effective_location = (
-            payload.frontend_payload.location
-            or user.get("city")
-            or "Unknown"
-        )
+        effective_location = model_row.location or user.get("city") or ""
 
         inference = run_inference(
             amount=amount,
@@ -165,13 +217,13 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
             device_dist_score=device_dist_score,
             location=effective_location,
             known_device=known_index is not None,
-            card1=payload.card1,
-            d1=payload.d1,
-            d2=payload.d2,
-            d3=payload.d3,
-            v_cols=payload.v_cols,
-            c_cols=payload.c_cols,
-            m_cols=payload.m_cols,
+            card1=model_row.card1,
+            d1=model_row.d1,
+            d2=model_row.d2,
+            d3=model_row.d3,
+            v_cols=model_row.v_cols,
+            c_cols=model_row.c_cols,
+            m_cols=model_row.m_cols,
         )
         model_decision = inference.model_decision
         calibrated_prob = inference.calibrated_prob
@@ -184,32 +236,48 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
             "amt_zscore": round(amt_zscore, 4),
             "M_fail_count": m_fail_count,
             "M_all_fail": m_all_fail,
-            "card1": payload.card1,
-            "D1": payload.d1,
-            "D2": payload.d2,
-            "D3": payload.d3,
-            "v_cols": payload.v_cols,
-            "c_cols": payload.c_cols,
-            "m_cols": payload.m_cols,
+            "card1": model_row.card1,
+            "D1": model_row.d1,
+            "D2": model_row.d2,
+            "D3": model_row.d3,
+            "v_cols": model_row.v_cols,
+            "c_cols": model_row.c_cols,
+            "m_cols": model_row.m_cols,
+            "source_transaction_id": model_row.source_transaction_id,
+        }
+
+        frontend_payload = {
+            "transaction_amt": amount,
+            "client_ip": payload.frontend_payload.client_ip or "0.0.0.0",
+            "merchant_name": model_row.merchant_name,
+            "location": model_row.location,
         }
 
         pipeline_results = {
             "model_decision": model_decision,
             "calibrated_prob": calibrated_prob,
             "stacker_score": stacker_score,
+            "raw_fraud_score": model_row.raw_fraud_score,
             "model_source": inference.model_source,
             "base_outputs": inference.base_outputs,
             "queue_outputs": inference.queue_outputs,
             "why_flagged": inference.why_flagged,
+            "source_transaction_id": model_row.source_transaction_id,
+            "pipeline_decision": model_row.decision,
+            "pipeline_calibrated_prob": model_row.calibrated_prob,
         }
 
         txn_doc = {
-            "user_key": payload.user_key,
+            "user_key": user_key,
             "device_hash": device_hash,
             "timestamp": now,
-            "frontend_payload": payload.frontend_payload.model_dump(),
+            "frontend_payload": frontend_payload,
             "backend_snapshot": backend_snapshot,
             "pipeline_results": pipeline_results,
+            "user_identity": {
+                "name": user.get("name", payload.name or ""),
+                "email": user.get("email", payload.email or ""),
+            },
         }
 
         # Trip 4: save unified transaction + update user's behavior sequence and transaction IDs
@@ -224,7 +292,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         }
 
         await db.users.update_one(
-            {"user_key": payload.user_key},
+            {"user_key": user_key},
             {
                 "$set": {"known_devices": known_devices},
                 "$inc": {"user_txn_count": 1},
@@ -241,10 +309,11 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
         live_payload = _to_live_transaction(
             {
                 "_id": insert_result.inserted_id,
-                "user_key": payload.user_key,
-                "frontend_payload": payload.frontend_payload.model_dump(),
+                "user_key": user_key,
+                "frontend_payload": frontend_payload,
                 "timestamp": now,
                 "pipeline_results": pipeline_results,
+                "backend_snapshot": backend_snapshot,
             },
             user,
         )
@@ -258,7 +327,7 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
 
         return {
             "transaction_id": txn_id,
-            "user_key": payload.user_key,
+            "user_key": user_key,
             "device_hash": device_hash,
             "decision": model_decision,
             "calibrated_prob": calibrated_prob,
@@ -270,66 +339,9 @@ async def process_transaction(payload: TransactionProcessRequest, db: AsyncIOMot
     except HTTPException:
         # Let explicit HTTP errors (like 404 User not found) propagate.
         raise
-    except Exception as exc:  # pragma: no cover - defensive fallback for demo
+    except Exception as exc:  # pragma: no cover - preserve explicit backend failure
         print(f"[process_transaction] unexpected error for user {payload.user_key}: {exc!r}")
-        # Fail closed for security: treat as high risk, but still
-        # record a minimal transaction and broadcast it so the
-        # dashboard live feed stays in sync.
-        fallback_pipeline = {
-            "model_decision": "block",
-            "calibrated_prob": 1.0,
-            "stacker_score": 1.0,
-            "model_source": "backend_fallback_error",
-            "base_outputs": {},
-            "queue_outputs": {},
-            "why_flagged": "Backend error during fraud evaluation; transaction treated as high risk.",
-        }
-
-        try:
-            user = await db.users.find_one({"user_key": payload.user_key}) or {}
-            txn_doc = {
-                "user_key": payload.user_key,
-                "device_hash": "",
-                "timestamp": now,
-                "frontend_payload": payload.frontend_payload.model_dump(),
-                "backend_snapshot": {},
-                "pipeline_results": fallback_pipeline,
-            }
-            insert_result = await db.transactions.insert_one(txn_doc)
-            txn_id = str(insert_result.inserted_id)
-
-            live_payload = _to_live_transaction(
-                {
-                    "_id": insert_result.inserted_id,
-                    "user_key": payload.user_key,
-                    "frontend_payload": payload.frontend_payload.model_dump(),
-                    "timestamp": now,
-                    "pipeline_results": fallback_pipeline,
-                },
-                user,
-            )
-            await transaction_stream.broadcast(
-                {
-                    "type": "transaction.created",
-                    "transaction": live_payload,
-                    "generated_at": now.isoformat(),
-                }
-            )
-        except Exception as inner_exc:
-            print(f"[process_transaction] fallback insert/broadcast failed for user {payload.user_key}: {inner_exc!r}")
-            txn_id = "fallback"
-
-        return {
-            "transaction_id": txn_id,
-            "user_key": payload.user_key,
-            "device_hash": "",
-            "decision": "block",
-            "calibrated_prob": 1.0,
-            "stacker_score": 1.0,
-            "model_source": "backend_fallback_error",
-            "why_flagged": "Backend error during fraud evaluation; transaction treated as high risk.",
-            "timestamp": now,
-        }
+        raise HTTPException(status_code=500, detail="Transaction processing failed") from exc
 
 
 @router.get("/{transaction_id}")

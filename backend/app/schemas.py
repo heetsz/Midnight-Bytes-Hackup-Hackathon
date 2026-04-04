@@ -60,16 +60,18 @@ class DeviceRegisterRequest(BaseModel):
 
 
 class FrontendPayload(BaseModel):
-    transaction_amt: float = Field(gt=0)
-    client_ip: str
+    transaction_amt: float | None = Field(default=None, gt=0)
+    client_ip: str | None = None
     merchant_name: str | None = None
     location: str | None = None
 
 
 class TransactionProcessRequest(BaseModel):
-    user_key: str
-    frontend_payload: FrontendPayload
-    fingerprint: DeviceFingerprint
+    user_key: str | None = None
+    name: str | None = None
+    email: str | None = None
+    frontend_payload: FrontendPayload = Field(default_factory=FrontendPayload)
+    fingerprint: DeviceFingerprint | None = None
     card1: int | None = None
     d1: float | None = None
     d2: float | None = None
