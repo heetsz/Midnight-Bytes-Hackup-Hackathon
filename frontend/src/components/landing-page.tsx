@@ -184,7 +184,6 @@ function DashboardSection() {
         const data = (await response.json()) as DashboardStats;
         setStats(data);
       } catch (error) {
-        // Keep UI usable with placeholder values while backend integration is evolving.
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
@@ -197,13 +196,13 @@ function DashboardSection() {
     return () => controller.abort();
   }, []);
 
-  const totalToday = stats?.total_transactions_today ?? 2184392;
-  const fraudCaught = stats?.fraud_blocked_today?.count ?? 1284;
-  const amountSaved = stats?.fraud_blocked_today?.amount_sum ?? 986430.52;
+  const totalToday = stats?.total_transactions_today ?? 0;
+  const fraudCaught = stats?.fraud_blocked_today?.count ?? 0;
+  const amountSaved = stats?.fraud_blocked_today?.amount_sum ?? 0;
   const falsePositive =
     stats?.fraud_by_type?.find((item) =>
       item.fraud_type.toLowerCase().includes("false")
-    )?.count ?? 23;
+    )?.count ?? 0;
 
   const formatNumber = (value: number) =>
     new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
@@ -260,18 +259,7 @@ type DashboardStats = {
 };
 
 function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
-  const fallback = [
-    { fraud_type: "ATO", count: 42 },
-    { fraud_type: "Low & Slow", count: 28 },
-    { fraud_type: "Velocity", count: 16 },
-    { fraud_type: "Fraud Ring", count: 9 },
-    { fraud_type: "Synthetic ID", count: 5 },
-  ];
-
-  const source =
-    stats?.fraud_by_type && stats.fraud_by_type.length > 0
-      ? stats.fraud_by_type
-      : fallback;
+  const source = stats?.fraud_by_type ?? [];
 
   const total = Math.max(1, source.reduce((sum, item) => sum + item.count, 0));
   const toPercent = (value: number) => Math.min(100, Math.max(0, (value / total) * 100));
@@ -299,6 +287,12 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
 
       <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
         <div className="h-[320px]">
+          {chartData.length === 0 && (
+            <div className="h-full w-full flex items-center justify-center text-sm text-slate-400">
+              No fraud events available yet.
+            </div>
+          )}
+          {chartData.length > 0 && (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -353,6 +347,7 @@ function FraudTypeBreakdownCard({ stats }: { stats: DashboardStats | null }) {
               />
             </PieChart>
           </ResponsiveContainer>
+          )}
         </div>
       </div>
     </div>
@@ -363,6 +358,7 @@ type LiveTransaction = {
   txn_id: string;
   user_id: string;
   username: string;
+  email?: string;
   amount: number;
   fraud_score: number;
   decision: string;
@@ -370,6 +366,14 @@ type LiveTransaction = {
   timestamp: string;
   location: string;
   why_flagged?: string;
+  model_source?: string;
+  stacker_score?: number;
+  calibrated_prob?: number;
+  raw_fraud_score?: number;
+  base_outputs?: Record<string, number>;
+  queue_outputs?: Record<string, number>;
+  backend_snapshot?: Record<string, unknown>;
+  source_transaction_id?: string;
 };
 
 type LiveTransactionsResponse = {
@@ -546,11 +550,11 @@ function LiveTransactionsFeedSection() {
         };
 
         setActiveUserMeta({
-          usualCity: data.user?.city || "Unknown",
+          usualCity: data.user?.city || "",
           trustedDeviceCount: data.user?.trusted_devices?.length ?? 0,
         });
       } catch {
-        setActiveUserMeta({ usualCity: "Unknown", trustedDeviceCount: 0 });
+        setActiveUserMeta({ usualCity: "", trustedDeviceCount: 0 });
       }
     }
 
@@ -1086,6 +1090,9 @@ function TransactionDetailOverlay({
                       <p className="text-sm font-medium text-slate-50">
                         {transaction.username || transaction.user_id}
                       </p>
+                      <p className="text-xs text-slate-400">
+                        {transaction.email || "Email not available"}
+                      </p>
                     </div>
                   </div>
 
@@ -1140,7 +1147,7 @@ function TransactionDetailOverlay({
                           : "No trusted devices on record"}
                       </p>
                       <p className="text-xs text-slate-400">
-                        Usual city: {userMeta?.usualCity || "Unknown"}
+                        Usual city: {userMeta?.usualCity || "Not available"}
                       </p>
                     </div>
                   </div>
@@ -1209,6 +1216,48 @@ function TransactionDetailOverlay({
                   <p className="text-xs text-slate-400">
                     Confidence: {aiExplanation.confidence}%
                   </p>
+                </div>
+              </div>
+
+              <div className="mb-5 grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Model Source</p>
+                  <p className="text-sm font-medium text-slate-100">{transaction.model_source || "N/A"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Source Transaction ID</p>
+                  <p className="text-sm font-medium text-slate-100">{transaction.source_transaction_id || "N/A"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Calibrated Probability</p>
+                  <p className="text-sm font-medium text-slate-100">
+                    {typeof transaction.calibrated_prob === "number"
+                      ? transaction.calibrated_prob.toFixed(6)
+                      : "N/A"}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Stacker Score</p>
+                  <p className="text-sm font-medium text-slate-100">
+                    {typeof transaction.stacker_score === "number"
+                      ? transaction.stacker_score.toFixed(6)
+                      : "N/A"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                  <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">Base Outputs</p>
+                  <pre className="overflow-x-auto text-xs text-slate-300">{JSON.stringify(transaction.base_outputs || {}, null, 2)}</pre>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                  <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">Queue Outputs</p>
+                  <pre className="overflow-x-auto text-xs text-slate-300">{JSON.stringify(transaction.queue_outputs || {}, null, 2)}</pre>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                  <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">Backend Snapshot</p>
+                  <pre className="overflow-x-auto text-xs text-slate-300">{JSON.stringify(transaction.backend_snapshot || {}, null, 2)}</pre>
                 </div>
               </div>
 
@@ -1705,23 +1754,8 @@ function FraudRingSection() {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
-
-        const fallbackNodes: FraudRingNode[] = [
-          { id: "USR003", label: "Rohan Iyer", node_type: "user", risk_score: 82 },
-          { id: "USR004", label: "Neha Kulkarni", node_type: "user", risk_score: 74 },
-          { id: "USR005", label: "Karthik Rajan", node_type: "user", risk_score: 79 },
-          { id: "device:ring_shared_device_01", label: "ring_shared_device_01", node_type: "device", risk_score: 91 },
-        ];
-        const fallbackLinks: FraudRingLink[] = [
-          { source: "USR003", target: "USR004", relation: "ring_link", confidence: 0.91 },
-          { source: "USR004", target: "USR005", relation: "ring_link", confidence: 0.88 },
-          { source: "USR003", target: "device:ring_shared_device_01", relation: "shared_device", confidence: 0.95 },
-          { source: "USR004", target: "device:ring_shared_device_01", relation: "shared_device", confidence: 0.95 },
-          { source: "USR005", target: "device:ring_shared_device_01", relation: "shared_device", confidence: 0.95 },
-        ];
-
-        setNodes(fallbackNodes);
-        setLinks(fallbackLinks);
+        setNodes([]);
+        setLinks([]);
       }
     }
 
@@ -3271,41 +3305,15 @@ function TransactionReportSection() {
 }
 
 function LocationSection() {
-  const fallbackCityStats = useMemo(
-    () => [
-      {
-        city: "Mumbai",
-        fraud: 12,
-        transactions: 42,
-        tone: "danger" as const,
-        location: [19.076, 72.8777] as [number, number],
-      },
-      {
-        city: "Delhi",
-        fraud: 8,
-        transactions: 31,
-        tone: "warning" as const,
-        location: [28.6139, 77.209] as [number, number],
-      },
-      {
-        city: "Hyderabad",
-        fraud: 19,
-        transactions: 37,
-        tone: "danger" as const,
-        location: [17.385, 78.4867] as [number, number],
-      },
-      {
-        city: "Bangalore",
-        fraud: 3,
-        transactions: 18,
-        tone: "success" as const,
-        location: [12.9716, 77.5946] as [number, number],
-      },
-    ],
-    []
-  );
-
-  const [cityStats, setCityStats] = useState(fallbackCityStats);
+  const [cityStats, setCityStats] = useState<
+    Array<{
+      city: string;
+      fraud: number;
+      transactions: number;
+      tone: "danger" | "warning" | "success";
+      location: [number, number];
+    }>
+  >([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -3331,7 +3339,7 @@ function LocationSection() {
         };
 
         if (!data.cities || data.cities.length === 0) {
-          setCityStats(fallbackCityStats);
+          setCityStats([]);
           return;
         }
 
@@ -3348,13 +3356,13 @@ function LocationSection() {
 
         setCityStats(mapped);
       } catch {
-        setCityStats(fallbackCityStats);
+        setCityStats([]);
       }
     }
 
     void loadLocationHeatmap();
     return () => controller.abort();
-  }, [fallbackCityStats]);
+  }, []);
 
   const globeMarkers = cityStats.map((city) => ({
     id: city.city,
@@ -3465,35 +3473,62 @@ function FraudHeatMapMap({
 }
 
 function AlertsSection() {
-  const alerts = [
-    {
-      id: "TXN-984213",
-      amount: "₹89,200.00",
-      channel: "International Wire",
-      risk: "HIGH",
-      score: "92/100",
-      time: "2 min ago · Singapore → London",
-      tone: "danger" as const,
-    },
-    {
-      id: "TXN-984087",
-      amount: "$1,420.00",
-      channel: "Card Not Present",
-      risk: "MEDIUM",
-      score: "71/100",
-      time: "9 min ago · Mumbai → Dubai",
-      tone: "warning" as const,
-    },
-    {
-      id: "TXN-983904",
-      amount: "$64.00",
-      channel: "UPI",
-      risk: "LOW",
-      score: "34/100",
-      time: "14 min ago · Delhi",
-      tone: "success" as const,
-    },
-  ];
+  const [alerts, setAlerts] = useState<
+    Array<{
+      id: string;
+      amount: string;
+      channel: string;
+      risk: string;
+      score: string;
+      time: string;
+      tone: "success" | "warning" | "danger";
+    }>
+  >([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadAlerts() {
+      try {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(`${baseUrl}/api/transactions/live?limit=15`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed alerts: ${response.status}`);
+        }
+
+        const data = (await response.json()) as LiveTransactionsResponse;
+        const mapped = data.transactions.map((tx) => {
+          const tone = tx.fraud_score >= 70 ? "danger" : tx.fraud_score >= 40 ? "warning" : "success";
+          const risk = tone === "danger" ? "HIGH" : tone === "warning" ? "MEDIUM" : "LOW";
+          return {
+            id: tx.txn_id,
+            amount: new Intl.NumberFormat("en-IN", {
+              style: "currency",
+              currency: "INR",
+              maximumFractionDigits: 0,
+            }).format(tx.amount),
+            channel: tx.merchant_name || "N/A",
+            risk,
+            score: `${tx.fraud_score}/100`,
+            time: `${new Date(tx.timestamp).toLocaleString()}${tx.location ? ` · ${tx.location}` : ""}`,
+            tone,
+          };
+        });
+        setAlerts(mapped);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setAlerts([]);
+      }
+    }
+
+    void loadAlerts();
+    return () => controller.abort();
+  }, []);
 
   return (
     <section id="alerts" className="space-y-10">
@@ -3516,6 +3551,11 @@ function AlertsSection() {
                 {alerts.map((alert) => (
                   <AlertCard key={alert.id} {...alert} />
                 ))}
+                {alerts.length === 0 && (
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 px-3 py-4 text-xs text-slate-400 text-center">
+                    No alert events available yet.
+                  </div>
+                )}
               </div>
             </div>
         </div>
@@ -3525,29 +3565,58 @@ function AlertsSection() {
 }
 
 function SimulationSection() {
-  const sampleRows = [
-    {
-      id: "TXN-984213",
-      amount: "$4,980.00",
-      location: "Singapore → London",
-      status: "Blocked",
-      tone: "danger" as const,
-    },
-    {
-      id: "TXN-984211",
-      amount: "$1,120.00",
-      location: "Delhi → Dubai",
-      status: "Flagged",
-      tone: "warning" as const,
-    },
-    {
-      id: "TXN-984205",
-      amount: "$72.00",
-      location: "Mumbai",
-      status: "Safe",
-      tone: "success" as const,
-    },
-  ];
+  const [simulationRows, setSimulationRows] = useState<
+    Array<{
+      id: string;
+      amount: string;
+      location: string;
+      status: string;
+      tone: "success" | "warning" | "danger";
+    }>
+  >([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadSimulationRows() {
+      try {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(`${baseUrl}/api/transactions/live?limit=10`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed simulation rows: ${response.status}`);
+        }
+
+        const data = (await response.json()) as LiveTransactionsResponse;
+        const mapped = data.transactions.map((tx) => {
+          const tone = tx.decision === "BLOCK" ? "danger" : tx.decision === "REVIEW" ? "warning" : "success";
+          const status = tx.decision === "BLOCK" ? "Blocked" : tx.decision === "REVIEW" ? "Flagged" : "Safe";
+          return {
+            id: tx.txn_id,
+            amount: new Intl.NumberFormat("en-IN", {
+              style: "currency",
+              currency: "INR",
+              maximumFractionDigits: 0,
+            }).format(tx.amount),
+            location: tx.location || "N/A",
+            status,
+            tone,
+          };
+        });
+        setSimulationRows(mapped);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setSimulationRows([]);
+      }
+    }
+
+    void loadSimulationRows();
+    return () => controller.abort();
+  }, []);
 
   return (
     <section id="simulation" className="space-y-10">
@@ -3558,34 +3627,33 @@ function SimulationSection() {
               Simulation Studio
             </h2>
             <p className="text-sm md:text-[15px] text-slate-400 leading-6">
-              Launch synthetic card testing, account takeover, and bot attack
-              scenarios in a safe environment to validate your controls before
-              they hit production.
+              Validate fraud controls using recent backend transactions and model
+              decisions in a controlled review workflow.
             </p>
           </div>
           <div className="space-y-4">
             <SectionTitle
               icon={Activity}
               label="Simulation"
-              description="Simulate synthetic fraud attacks to stress-test detection."
+              description="Review backend transaction outcomes before taking action."
             />
             <div className="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] items-start">
               <div className="rounded-3xl bg-white/5 border border-white/10 backdrop-blur-xl p-5 space-y-4">
                 <p className="text-sm text-slate-300">
-                  Replay synthetic scenarios – card testing, account takeover, and
-                  bot attacks – without touching production traffic.
+                  Use this panel to review recent backend-driven transactions,
+                  check risk outcomes, and validate response playbooks.
                 </p>
                 <div className="flex flex-wrap gap-2 text-[11px]">
-                  <Tag tone="danger">Card testing</Tag>
-                  <Tag tone="warning">Account takeover</Tag>
-                  <Tag tone="success">Safe traffic baseline</Tag>
+                  <Tag tone="danger">High-risk cases</Tag>
+                  <Tag tone="warning">Review queue</Tag>
+                  <Tag tone="success">Approved flow</Tag>
                 </div>
                 <button className="mt-3 inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-medium bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-400 text-slate-950 shadow-soft-glow hover:brightness-110 transition-all">
                   <Zap className="h-4 w-4" />
-                  Simulate Fraud Attack
+                  Refresh Backend Feed
                 </button>
                 <p className="text-[11px] text-slate-500">
-                  Synthetic stream only · no real customer data.
+                  Real backend data only.
                 </p>
               </div>
               <div className="rounded-3xl bg-slate-950/80 border border-white/10 backdrop-blur-2xl p-5 space-y-3">
@@ -3594,9 +3662,14 @@ function SimulationSection() {
                   <span>Most recent first</span>
                 </div>
                 <div className="space-y-2 text-xs">
-                  {sampleRows.map((row) => (
+                  {simulationRows.map((row) => (
                     <SimulationRow key={row.id} {...row} />
                   ))}
+                  {simulationRows.length === 0 && (
+                    <div className="rounded-2xl border border-white/10 bg-slate-900/60 px-3 py-4 text-xs text-slate-400 text-center">
+                      No backend transactions available yet.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

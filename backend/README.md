@@ -41,9 +41,10 @@ API_PORT=8000
 python main.py
 ```
 
-5. Populate MongoDB with sample Indian users/devices/transactions:
+5. Optional: populate MongoDB with sample data (disabled by default):
 
 ```bash
+set ENABLE_SAMPLE_SEEDING=1
 python seed_data.py
 ```
 

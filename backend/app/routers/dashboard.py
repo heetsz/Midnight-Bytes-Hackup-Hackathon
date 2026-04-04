@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -35,18 +35,8 @@ def _normalize_city(raw: str | None) -> str:
 async def dashboard_stats(db: AsyncIOMotorDatabase = Depends(get_db)):
     now = datetime.now(timezone.utc)
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    last_7d = now - timedelta(days=7)
-    last_30d = now - timedelta(days=30)
 
-    total_today = await db.transactions.count_documents({"timestamp": {"$gte": start_of_day}})
-
-    # If there is no activity today, use a recent window so dashboard doesn't stay empty.
-    if total_today > 0:
-        active_window = {"$gte": start_of_day}
-    else:
-        total_last_7d = await db.transactions.count_documents({"timestamp": {"$gte": last_7d}})
-        active_window = {"$gte": last_7d if total_last_7d > 0 else last_30d}
-
+    active_window = {"$gte": start_of_day}
     total_for_window = await db.transactions.count_documents({"timestamp": active_window})
 
     blocked_cursor = db.transactions.find(
@@ -152,28 +142,6 @@ async def fraud_ring_graph(db: AsyncIOMotorDatabase = Depends(get_db)):
                     "target": device_id,
                     "relation": "shared_device",
                     "confidence": 0.95,
-                }
-            )
-
-    if not nodes:
-        users_cursor = db.users.find({}).limit(4)
-        fallback_users = [u async for u in users_cursor]
-        for index, user in enumerate(fallback_users):
-            nodes.append(
-                {
-                    "id": user["user_key"],
-                    "label": user.get("name", user["user_key"]),
-                    "node_type": "user",
-                    "risk_score": 50 + index * 10,
-                }
-            )
-        if len(fallback_users) >= 2:
-            links.append(
-                {
-                    "source": fallback_users[0]["user_key"],
-                    "target": fallback_users[1]["user_key"],
-                    "relation": "ring_link",
-                    "confidence": 0.75,
                 }
             )
 

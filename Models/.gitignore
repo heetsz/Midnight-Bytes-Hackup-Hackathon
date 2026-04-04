@@ -1,0 +1,31 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Notebook / local env artifacts
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+
+# Generated datasets and intermediate artifacts
+data/
+features/
+*.parquet
+*.csv
+*.npz
+*.npy
+
+# Trained model artifacts
+models/*.pt
+models/*.pth
+models/*.ckpt
+models/*.onnx
+models/*.bin
+models/*.joblib
+models/*.pkl
+models/*.lgb
+
+# Keep source files tracked
+!models/*.py
+!models/__init__.py

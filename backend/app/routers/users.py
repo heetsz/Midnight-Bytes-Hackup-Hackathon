@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -95,7 +95,7 @@ async def search_users(
             {
                 "user_id": user["user_key"],
                 "name": user.get("name") or user["user_key"],
-                "city": user.get("city", "Unknown"),
+                "city": user.get("city") or "",
                 "member_since": user.get("created_at"),
                 "risk_label": _risk_label(avg_score),
                 "avg_txn_per_day": round(avg_txn_per_day, 2),
@@ -141,10 +141,10 @@ async def get_user_profile(user_key: str, db: AsyncIOMotorDatabase = Depends(get
             {
                 "txn_id": str(item.get("_id")),
                 "amount": float(frontend_payload.get("transaction_amt", 0)),
-                "merchant_name": frontend_payload.get("merchant_name", "Unknown Merchant"),
+                "merchant_name": frontend_payload.get("merchant_name") or "",
                 "fraud_score": fraud_score,
                 "timestamp": item.get("timestamp"),
-                "city": user.get("city", "Unknown"),
+                "city": user.get("city") or "",
             }
         )
 
@@ -160,22 +160,11 @@ async def get_user_profile(user_key: str, db: AsyncIOMotorDatabase = Depends(get
             }
         )
 
-    if not login_history:
-        fallback_time = utc_now() - timedelta(hours=2)
-        login_history = [
-            {
-                "ip_address": "0.0.0.0",
-                "success": True,
-                "failure_reason": None,
-                "timestamp": fallback_time,
-            }
-        ]
-
     return {
         "user": {
             "user_id": user.get("user_key"),
             "name": user.get("name"),
-            "city": user.get("city", "Unknown"),
+            "city": user.get("city") or "",
             "usual_login_hour": int(user.get("usual_login_hour", 10)),
             "avg_txn_per_day": round(
                 user.get("user_txn_count", 0)

@@ -10,39 +10,18 @@ from pymongo import MongoClient
 
 
 FIRST_NAMES = [
-    "Aarav", "Vivaan", "Aditya", "Arjun", "Reyansh", "Krishna", "Ishaan", "Atharv", "Kabir", "Rohan",
-    "Rahul", "Karan", "Aniket", "Siddharth", "Abhishek", "Nikhil", "Varun", "Aman", "Harsh", "Yash",
-    "Ananya", "Diya", "Aadhya", "Myra", "Saanvi", "Aisha", "Riya", "Sneha", "Priya", "Neha",
-    "Kavya", "Shruti", "Ira", "Pooja", "Nandini", "Meera", "Ishita", "Komal", "Tanya", "Swati",
 ]
 
 LAST_NAMES = [
-    "Sharma", "Verma", "Gupta", "Patel", "Singh", "Kumar", "Reddy", "Rao", "Nair", "Menon",
-    "Mishra", "Joshi", "Kapoor", "Bansal", "Malhotra", "Iyer", "Chatterjee", "Mukherjee", "Das", "Yadav",
-    "Jain", "Pandey", "Kulkarni", "Desai", "Shetty", "Khan", "Ansari", "Ali", "Naidu", "Tripathi",
 ]
 
 CITY_DATA = [
-    {"city": "Mumbai", "location": "Mumbai, Maharashtra", "lat": 19.0760, "lon": 72.8777, "risk_bias": 0.56},
-    {"city": "Delhi", "location": "Delhi, NCR", "lat": 28.6139, "lon": 77.2090, "risk_bias": 0.52},
-    {"city": "Bengaluru", "location": "Bengaluru, Karnataka", "lat": 12.9716, "lon": 77.5946, "risk_bias": 0.47},
-    {"city": "Hyderabad", "location": "Hyderabad, Telangana", "lat": 17.3850, "lon": 78.4867, "risk_bias": 0.61},
-    {"city": "Chennai", "location": "Chennai, Tamil Nadu", "lat": 13.0827, "lon": 80.2707, "risk_bias": 0.44},
-    {"city": "Kolkata", "location": "Kolkata, West Bengal", "lat": 22.5726, "lon": 88.3639, "risk_bias": 0.48},
-    {"city": "Pune", "location": "Pune, Maharashtra", "lat": 18.5204, "lon": 73.8567, "risk_bias": 0.42},
-    {"city": "Ahmedabad", "location": "Ahmedabad, Gujarat", "lat": 23.0225, "lon": 72.5714, "risk_bias": 0.40},
-    {"city": "Jaipur", "location": "Jaipur, Rajasthan", "lat": 26.9124, "lon": 75.7873, "risk_bias": 0.43},
-    {"city": "Lucknow", "location": "Lucknow, Uttar Pradesh", "lat": 26.8467, "lon": 80.9462, "risk_bias": 0.46},
 ]
 
 MERCHANTS_NORMAL = [
-    "Reliance Fresh", "DMart", "BigBasket", "Flipkart", "Amazon India", "Myntra", "Swiggy", "Zomato",
-    "IRCTC", "BookMyShow", "Airtel Payments", "Jio Recharge", "Tata Cliq", "Nykaa", "Apollo Pharmacy",
 ]
 
 MERCHANTS_RISKY = [
-    "CryptoBazaarX", "GiftCard Vault", "Instant Loan Hub", "Offshore Transfer Desk", "ShadowPay Gateway",
-    "FastCash Wallet", "Neo Bet Exchange", "Unknown Merchant", "Flash Deals Global", "Card Clone Outlet",
 ]
 
 
@@ -81,9 +60,13 @@ def decision_from_prob(prob: float) -> str:
 
 
 def main() -> None:
+    if os.getenv("ENABLE_SAMPLE_SEEDING", "0").strip() != "1":
+        print("Seeding is disabled. Set ENABLE_SAMPLE_SEEDING=1 to run seed_data.py.")
+        return
+
     load_dotenv()
 
-    uri = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    uri = os.getenv("MONGODB_URL")
     db_name = os.getenv("MONGODB_DB_NAME", "fraud_ops")
 
     random.seed(42)
