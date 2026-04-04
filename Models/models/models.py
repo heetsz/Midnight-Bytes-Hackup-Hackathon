@@ -200,29 +200,20 @@ class DeviceFingerEncoder(nn.Module):
     Encodes a device fingerprint (categorical + continuous features)
     into a 64-dim L2-normalised embedding.
     """
-    def __init__(
-        self,
-        n_categorical_features: int = 5,   # id_31, id_33, DeviceType, etc.
-        cat_embed_dim: int = 16,
-        n_continuous: int = 2,             # device_match_ord, device_novelty
-        embed_dim: int = 64,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, cat_dims: list, cat_embed_dim: int, n_continuous: int, embed_dim: int):
         super().__init__()
         # Each categorical gets its own embedding (sizes vary in practice;
         # use vocab_size determined from dataset)
         self.cat_embeds = nn.ModuleList([
-            nn.Embedding(500, cat_embed_dim) for _ in range(n_categorical_features)
+            nn.Embedding(num_embeddings=dim, embedding_dim=cat_embed_dim) 
+            for dim in cat_dims
         ])
 
-        in_dim = n_categorical_features * cat_embed_dim + n_continuous
+        total_in_dim = (len(cat_dims) * cat_embed_dim) + n_continuous
         self.encoder = nn.Sequential(
-            nn.Linear(in_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(total_in_dim, 128),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, embed_dim),
-            nn.LayerNorm(embed_dim),
+            nn.Linear(128, embed_dim)
         )
 
     def forward(self, cat_feats: torch.Tensor, cont_feats: torch.Tensor) -> torch.Tensor:

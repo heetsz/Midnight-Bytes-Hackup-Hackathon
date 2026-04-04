@@ -130,7 +130,7 @@ class PipelineConfig:
     dgraphfin_weights: str = "models/dgraphfin_pretrained.pt"
     synth_id_detector: str = "models/synth_id_detector.pt"
     ato_detector: str = "models/ato_chain_detector.pt"
-    lgbm_stacker: str = "models/lgbm_stacker.lgb"
+    lgbm_stacker: str = "models/lgbm_stacker.pt"
     platt_calibrator: str = "models/platt_calibrator.pt"
     
     # Feature store outputs
@@ -174,137 +174,163 @@ class PyTorchShapWrapper(torch.nn.Module):
             # Standard sequential MLP
             return self.model(x)
 
+class TabNetShapWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+    def forward(self, x):
+        # SHAP expects a single Tensor output, not the {logit: x, embedding: y} dict
+        out = self.model(x)
+        return out["logit"] 
+
 class UnifiedFraudExplainer:
     def __init__(self, models_dict, background_data, feature_names):
-        """Initialize SHAP explainers for all models (handles optional models)."""
+        """Initialize SHAP explainers for all available models."""
         self.feature_names = feature_names
         self.explainers = {}
         self.models_dict = models_dict
         
         logger.info("  Initializing SHAP explainers...")
         
-        # 1. TabNet Explainer
+        if not models_dict:
+            logger.error("    ❌ models_dict is empty!")
+            return
+
+        # --- 1. TabNet Explainer ---
         if "tabnet" in models_dict and models_dict["tabnet"] is not None:
             try:
-                tabnet_wrapped = PyTorchShapWrapper(models_dict["tabnet"], mode="tabnet").eval()
-                self.explainers["tabnet"] = shap.DeepExplainer(
-                    tabnet_wrapped, background_data["raw_features"]
-                )
-                logger.info("    OK TabNet")
+                # FIX: Access from background_data dictionary
+                bg = background_data.get("raw_features")
+                if bg is not None:
+                    # Use the wrapper to ensure we only get the 'logit' output
+                    tabnet_wrapped = PyTorchShapWrapper(models_dict["tabnet"], mode="tabnet").eval()
+                    self.explainers["tabnet"] = shap.DeepExplainer(tabnet_wrapped, bg)
+                    logger.info("    ✓ TabNet SHAP initialized")
             except Exception as e:
-                logger.warning(f"    SKIP TabNet: {e}")
-        
-        # 2. Autoencoder Explainer
+                logger.warning(f"    ✗ TabNet SHAP failed: {type(e).__name__}: {str(e)[:50]}")
+
+        # --- 2. Autoencoder Explainer ---
         if "autoencoder" in models_dict and models_dict["autoencoder"] is not None:
             try:
-                ae_wrapped = PyTorchShapWrapper(models_dict["autoencoder"], mode="dae").eval()
-                self.explainers["autoencoder"] = shap.DeepExplainer(
-                    ae_wrapped, background_data["raw_features"]
-                )
-                logger.info("    OK Autoencoder")
+                bg = background_data.get("raw_features")
+                if bg is not None:
+                    ae_wrapped = PyTorchShapWrapper(models_dict["autoencoder"], mode="dae").eval()
+                    self.explainers["autoencoder"] = shap.DeepExplainer(ae_wrapped, bg)
+                    logger.info("    ✓ Autoencoder SHAP initialized")
             except Exception as e:
-                logger.warning(f"    SKIP Autoencoder: {e}")
-        
-        # 3. SyntheticID Explainer
+                logger.warning(f"    ✗ Autoencoder SHAP failed: {type(e).__name__}: {str(e)[:50]}")
+
+        # --- 3. SyntheticID Explainer ---
         if "synth_id" in models_dict and models_dict["synth_id"] is not None:
             try:
-                synth_wrapped = PyTorchShapWrapper(models_dict["synth_id"], mode="mlp").eval()
-                self.explainers["synth_id"] = shap.DeepExplainer(
-                    synth_wrapped, background_data["weak_features"]
-                )
-                logger.info("    OK SyntheticID")
+                bg_weak = background_data.get("weak_features")
+                if bg_weak is not None:
+                    synth_wrapped = PyTorchShapWrapper(models_dict["synth_id"], mode="mlp").eval()
+                    self.explainers["synth_id"] = shap.DeepExplainer(synth_wrapped, bg_weak)
+                    logger.info("    ✓ SyntheticID SHAP initialized")
             except Exception as e:
-                logger.warning(f"    SKIP SyntheticID: {e}")
-        
-        # 4. LightGBM Stacker Explainer
+                logger.warning(f"    ✗ SyntheticID SHAP failed: {type(e).__name__}: {str(e)[:50]}")
+
+        # --- 4. LightGBM Stacker Explainer ---
         if "lgbm_stacker" in models_dict and models_dict["lgbm_stacker"] is not None:
             try:
+                # TreeExplainer is best for GBMs
                 self.explainers["lgbm_stacker"] = shap.TreeExplainer(models_dict["lgbm_stacker"])
-                logger.info("    OK LightGBM Stacker")
+                logger.info("    ✓ LightGBM Stacker SHAP initialized")
             except Exception as e:
-                logger.warning(f"    SKIP LightGBM: {e}")
+                logger.warning(f"    ✗ LightGBM Stacker SHAP failed: {type(e).__name__}: {str(e)[:50]}")
+        
+        logger.info(f"    Summary: {len(self.explainers)} SHAP explainers ready.")
 
-    def _get_top_reasons(self, shap_values, feat_names, prefix="", threshold=0.05, max_reasons=2):
-        """Extract top drivers from SHAP values."""
-        if isinstance(shap_values, list):
-            vals = shap_values[1] if len(shap_values) > 1 else shap_values[0]
-        else:
-            vals = shap_values
-        
-        if isinstance(vals, np.ndarray) and len(vals.shape) > 1:
-            vals = vals[0]
-        else:
-            vals = np.array(vals).flatten()
-        
-        abs_vals = np.abs(vals)
-        top_indices = np.argsort(abs_vals)[::-1]
-        reasons = []
-        for idx in top_indices[:max_reasons]:
-            if idx < len(feat_names):
-                reasons.append(f"{prefix}{feat_names[idx]}: +{vals[idx]:.4f}")
-        return reasons
+    def _get_top_reasons(self, shap_values, feature_names, prefix="", top_n=3):
+        """Standardizes SHAP output and extracts top features."""
+        try:
+            # Handle list output (standard for binary classification)
+            if isinstance(shap_values, list):
+                # Class 1 is usually 'Fraud'
+                vals = shap_values[1] if len(shap_values) > 1 else shap_values[0]
+            else:
+                vals = shap_values
+            
+            # Convert to numpy and flatten
+            if torch.is_tensor(vals):
+                vals = vals.detach().cpu().numpy()
+            vals = vals.flatten()
+
+            # Find top impactful indices
+            top_indices = np.argsort(np.abs(vals))[-top_n:][::-1]
+            
+            reasons = []
+            for idx in top_indices:
+                # Lowered threshold to 1e-7 to capture small movements in low scores
+                if abs(vals[idx]) > 1e-7: 
+                    name = feature_names[idx]
+                    direction = "↑" if vals[idx] > 0 else "↓"
+                    reasons.append(f"{prefix}{name} ({direction})")
+            return reasons
+        except Exception as e:
+            return [f"{prefix}Error analyzing: {str(e)[:30]}"]
 
     def explain_transaction(self, raw_x, weak_x, stack_x, device):
-        """Generate fraud explanation using SHAP from all available models."""
+        """Orchestrates explanations across all active explainers."""
         combined_reasons = []
         
-        try:
-            # 1. TabNet SHAP
-            if "tabnet" in self.explainers:
-                try:
-                    raw_x_tensor = torch.tensor(raw_x, dtype=torch.float32, device=device)
-                    tabnet_shap = self.explainers["tabnet"].shap_values(raw_x_tensor)
-                    tabnet_reasons = self._get_top_reasons(tabnet_shap, self.feature_names["raw"], prefix="[TabNet] ")
-                    combined_reasons.extend(tabnet_reasons)
-                except Exception as e:
-                    logger.debug(f"TabNet SHAP failed: {e}")
-            
-            # 2. Autoencoder SHAP
-            if "autoencoder" in self.explainers:
-                try:
-                    raw_x_tensor = torch.tensor(raw_x, dtype=torch.float32, device=device)
-                    ae_shap = self.explainers["autoencoder"].shap_values(raw_x_tensor)
-                    ae_reasons = self._get_top_reasons(ae_shap, self.feature_names["raw"], prefix="[AE] ")
-                    combined_reasons.extend(ae_reasons)
-                except Exception as e:
-                    logger.debug(f"Autoencoder SHAP failed: {e}")
-            
-            # 3. SyntheticID SHAP
-            if "synth_id" in self.explainers:
-                try:
-                    weak_x_tensor = torch.tensor(weak_x, dtype=torch.float32, device=device)
-                    synth_shap = self.explainers["synth_id"].shap_values(weak_x_tensor)
-                    synth_reasons = self._get_top_reasons(synth_shap, self.feature_names["weak"], prefix="[SynID] ")
-                    combined_reasons.extend(synth_reasons)
-                except Exception as e:
-                    logger.debug(f"SyntheticID SHAP failed: {e}")
-            
-            # 4. LightGBM Stacker SHAP
-            if "lgbm_stacker" in self.explainers:
-                try:
-                    lgbm_shap = self.explainers["lgbm_stacker"].shap_values(stack_x)
-                    lgbm_reasons = self._get_top_reasons(lgbm_shap, self.feature_names["stack"], prefix="[Stacker] ")
-                    combined_reasons.extend(lgbm_reasons)
-                except Exception as e:
-                    logger.debug(f"LightGBM SHAP failed: {e}")
-        
-        except Exception as e:
-            logger.warning(f"SHAP explanation failed: {e}")
-        
-        if not combined_reasons:
-            combined_reasons = ["No clear reasons available"]
-            
-        return list(set(combined_reasons))
+        # Helper to convert inputs to torch tensors safely
+        def to_tensor(x):
+            if torch.is_tensor(x): return x.to(device).float()
+            return torch.tensor(x, dtype=torch.float32, device=device)
 
+        # 1. TabNet
+        if "tabnet" in self.explainers:
+            try:
+                tabnet_shap = self.explainers["tabnet"].shap_values(to_tensor(raw_x))
+                combined_reasons.extend(self._get_top_reasons(tabnet_shap, self.feature_names["raw"], "[TabNet] "))
+            except: pass
+
+        # 2. Autoencoder
+        if "autoencoder" in self.explainers:
+            try:
+                ae_shap = self.explainers["autoencoder"].shap_values(to_tensor(raw_x))
+                combined_reasons.extend(self._get_top_reasons(ae_shap, self.feature_names["raw"], "[AE] "))
+            except: pass
+
+        # 3. SyntheticID
+        if "synth_id" in self.explainers:
+            try:
+                synth_shap = self.explainers["synth_id"].shap_values(to_tensor(weak_x))
+                combined_reasons.extend(self._get_top_reasons(synth_shap, self.feature_names["weak"], "[SynID] "))
+            except: pass
+
+        # 4. Stacker (Highest priority/Usually most informative)
+        if "lgbm_stacker" in self.explainers:
+            try:
+                s_input = stack_x.values if hasattr(stack_x, 'values') else stack_x
+                if s_input.ndim == 1: s_input = s_input.reshape(1, -1)
+                lgbm_shap = self.explainers["lgbm_stacker"].shap_values(s_input)
+                combined_reasons.extend(self._get_top_reasons(lgbm_shap, self.feature_names["stack"], "[Stacker] "))
+            except: pass
+
+        # Deduplicate and return
+        if not combined_reasons:
+            return ["No clear reasons available"]
+        
+        # Filter out duplicates while keeping order
+        seen = set()
+        return [x for x in combined_reasons if not (x in seen or seen.add(x))]
 
 
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.preprocessing import LabelEncoder
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PHASE 1: FOUNDATION MODELS
+# GLOBAL MODELS REGISTRY (populated during pipeline execution)
 # ═══════════════════════════════════════════════════════════════════════════
 
+all_models = {}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 1: FOUNDATION MODELS
+# ═══════════════════════════════════════════════════════════════════════════ 
 
 class Phase1Foundation:
     def __init__(self, cfg):
@@ -361,7 +387,7 @@ class Phase1Foundation:
                 
                 optimizer.zero_grad(set_to_none=True) # Faster than zero_grad()
                 
-                with torch.cuda.amp.autocast("cuda"): # Half-precision forward pass
+                with torch.amp.autocast("cuda"): # Half-precision forward pass
                     out = model(data)
                     loss = criterion(out["logit"], target)
                 
@@ -391,145 +417,110 @@ class Phase1Foundation:
         ieee_df = ieee_df.copy() 
         
         torch.save(model.state_dict(), self.cfg.tabnet_finetuned)
-        return model, ieee_df
-    
-    def train_siamese_device(self, ieee_df: pd.DataFrame):
-        logger.info("\n[PHASE 1] Training Model B: Siamese Device Encoder (Production-Grade with Triplet Loss)...")
-        ieee_df = ieee_df.copy()
+
+        model.eval()
+        val_logits = []
+        with torch.no_grad(), torch.amp.autocast('cuda'):
+            val_loader = DataLoader(TensorDataset(torch.from_numpy(X_val)), batch_size=2048)
+            for (batch,) in val_loader:
+                out = model(batch.to(self.device))
+                val_logits.append(out["logit"].cpu().numpy())
         
-        try:
-            from PRODUCTION_MODELS_UPGRADE import train_siamese_device_with_hard_negatives
-            
-            device_cols = ["id_31", "id_33", "DeviceType", "DeviceInfo"]
-            for col in device_cols:
-                if col not in ieee_df.columns: 
-                    ieee_df[col] = "unknown"
-                ieee_df[col] = ieee_df[col].astype(str).fillna("unknown")
+        val_probs = torch.sigmoid(torch.from_numpy(np.concatenate(val_logits))).numpy()
+        auc_score = roc_auc_score(y_val, val_probs)
+        
+        logger.info(f"  [METRICS] TabNet Validation AUC: {auc_score:.4f}")
 
-            # Encode categorical features
-            cat_data, vocab_sizes = [], []
-            for col in device_cols:
-                encoder = LabelEncoder()
-                encoded = encoder.fit_transform(ieee_df[col])
-                cat_data.append(encoded.reshape(-1, 1))
-                vocab_sizes.append(int(encoded.max()) + 1)
+        return model, ieee_df
 
-            cat_feats = np.hstack(cat_data).astype(np.int64)
-            
-            # Prepare continuous features
-            cont_cols = ["device_match_ord", "device_novelty"]
-            for col in cont_cols:
-                if col not in ieee_df.columns: 
-                    ieee_df[col] = 0.0
-                ieee_df[col] = pd.to_numeric(ieee_df[col], errors='coerce').fillna(0)
+    def train_siamese_device(self, ieee_df: pd.DataFrame):
+        logger.info("\n[PHASE 1] Training Model B: Siamese Device Encoder (Fixed for Collapse)...")
+        
+        # 1. DE-FRAGMENT & SORT: Crucial for finding real positives
+        # We sort by card1 (User ID) so that adjacent rows are likely the same user
+        ieee_df = ieee_df.sort_values(["card1", "TransactionDT"]).copy()
+        
+        device_cols = ["id_31", "id_33", "DeviceType", "DeviceInfo"]
+        for col in device_cols:
+            ieee_df[col] = ieee_df[col].astype(str).fillna("unknown")
+
+        # Encode categorical
+        cat_data, vocab_sizes = [], []
+        for col in device_cols:
+            le = LabelEncoder()
+            encoded = le.fit_transform(ieee_df[col])
+            cat_data.append(encoded.reshape(-1, 1))
+            vocab_sizes.append(int(encoded.max()) + 1)
+
+        cat_feats = torch.tensor(np.hstack(cat_data), dtype=torch.long, device=self.device)
+        
+        # Prepare continuous (Add scaling to prevent gradient explosion)
+        cont_cols = ["device_match_ord", "device_novelty"]
+        for i in cont_cols:
+            if i not in ieee_df.columns:
+                ieee_df[i] = 0.0
+            else:
+                ieee_df[i] = ieee_df[i].fillna(0)
+        cont_values = ieee_df[cont_cols].values.astype(np.float32)
+        # Simple z-score scaling
+        cont_values = (cont_values - cont_values.mean(0)) / (cont_values.std(0) + 1e-6)
+        cont_feats = torch.tensor(cont_values, dtype=torch.float32, device=self.device)
+
+        model = DeviceFingerEncoder(
+            cat_dims=vocab_sizes,
+            cat_embed_dim=16,
+            n_continuous=cont_feats.shape[1],
+            embed_dim=64
+        ).to(self.device)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4) # Lower LR for stability
+        # Lower margin to prevent the "0.1000" trap
+        triplet_loss = nn.TripletMarginLoss(margin=0.5, p=2) 
+        
+        model.train()
+        batch_size = 1024 
+        epochs = 3 # Increased epochs since it's now actually learning
+        dataset = TensorDataset(cat_feats, cont_feats)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False) # Keep sorted order
+        
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            for batch_cat, batch_cont in loader:
+                optimizer.zero_grad(set_to_none=True)
                 
-            cont_feats = ieee_df[cont_cols].values.astype(np.float32)
-
-            # Create user key for hard negative mining
-            user_keys = ieee_df.get("card1", np.arange(len(ieee_df))).values
-
-            # Use production training
-            device_embeddings_oof, device_dist_scores = train_siamese_device_with_hard_negatives(
-                cat_feats=cat_feats,
-                cont_feats=cont_feats,
-                user_keys=user_keys,
-                cfg=self.cfg,
-                device=self.device,
-                epochs=40,
-                batch_size=256,
-                hard_neg_ratio=2.0,
-            )
-
-            ieee_df["device_embedding"] = list(device_embeddings_oof)
-            ieee_df["device_dist_score"] = device_dist_scores
-
-            logger.info(f"\n  === Siamese Device Results ===")
-            logger.info(f"  Embeddings shape: {device_embeddings_oof.shape}")
-            logger.info(f"  Distance scores - mean: {device_dist_scores.mean():.4f}, std: {device_dist_scores.std():.4f}")
-            logger.info(f"  Model architecture: vocab_sizes={vocab_sizes}\n")
-
-            # Create model for return
-            model = DeviceFingerEncoder(
-                cat_dims=vocab_sizes,
-                cat_embed_dim=16,
-                n_continuous=cont_feats.shape[1],
-                embed_dim=64
-            ).to(self.device)
-            
-            try:
-                model.load_state_dict(torch.load(self.cfg.siamese_device))
-            except:
-                logger.warning("  ⚠️  Could not load saved model weights")
-            
-            return model, ieee_df
-            
-        except ImportError:
-            logger.warning("  ⚠️  PRODUCTION_MODELS_UPGRADE not found, falling back to basic training...")
-            # Fallback to simplified training
-            device_cols = ["id_31", "id_33", "DeviceType", "DeviceInfo"]
-            for col in device_cols:
-                if col not in ieee_df.columns: 
-                    ieee_df[col] = "unknown"
-                ieee_df[col] = ieee_df[col].astype(str).fillna("unknown")
-
-            cat_data, vocab_sizes = [], []
-            for col in device_cols:
-                encoded = LabelEncoder().fit_transform(ieee_df[col])
-                cat_data.append(encoded.reshape(-1, 1))
-                vocab_size = int(encoded.max()) + 1
-                vocab_sizes.append(vocab_size)
-
-            cat_feats = torch.tensor(np.hstack(cat_data), dtype=torch.long, device=self.device)
-            
-            cont_cols = ["device_match_ord", "device_novelty"]
-            for col in cont_cols:
-                if col not in ieee_df.columns: 
-                    ieee_df[col] = 0.0
-                ieee_df[col] = pd.to_numeric(ieee_df[col], errors='coerce').fillna(0)
-                
-            cont_feats = torch.tensor(ieee_df[cont_cols].values, dtype=torch.float32, device=self.device)
-
-            model = DeviceFingerEncoder(
-                cat_dims=vocab_sizes,
-                cat_embed_dim=16,
-                n_continuous=cont_feats.shape[1],
-                embed_dim=64
-            ).to(self.device)
-            
-            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-            triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
-            
-            model.train()
-            batch_size = 2048
-            epochs = 1
-            dataset = TensorDataset(cat_feats, cont_feats)
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-            
-            final_loss = 0.0
-            for epoch in range(epochs):
-                epoch_loss = 0.0
-                for batch_cat, batch_cont in loader:
-                    optimizer.zero_grad()
+                with torch.amp.autocast("cuda"):
                     anchor_emb = model(batch_cat, batch_cont)
+                    
+                    # REAL POSITIVE: Since we sorted by card1, roll(1) is often the same user
                     pos_emb = torch.roll(anchor_emb, shifts=1, dims=0)
-                    neg_emb = torch.roll(anchor_emb, shifts=len(anchor_emb)//2, dims=0)
+                    # REAL NEGATIVE: A far-away index is almost certainly a different user
+                    neg_emb = torch.roll(anchor_emb, shifts=batch_size // 2, dims=0)
+                    
                     loss = triplet_loss(anchor_emb, pos_emb, neg_emb)
-                    loss.backward()
-                    optimizer.step()
-                    epoch_loss += loss.item()
                 
-                final_loss = epoch_loss/len(loader)
-                logger.info(f"  Epoch {epoch+1}/{epochs}: Triplet Loss = {final_loss:.4f}")
-
-            torch.save(model.state_dict(), self.cfg.siamese_device)
+                self.scaler.scale(loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
+                epoch_loss += loss.item()
             
-            model.eval()
-            with torch.no_grad():
-                device_emb = model(cat_feats, cont_feats)
-            ieee_df["device_embedding"] = list(device_emb.cpu().numpy())
-            
-            return model, ieee_df
+            logger.info(f"  Epoch {epoch+1}: Triplet Loss = {epoch_loss/len(loader):.4f}")
 
+        # Save and set to eval
+        torch.save(model.state_dict(), self.cfg.siamese_device)
+        model.eval()
+        
+        # 2. BULK ASSIGNMENT (Prevents PerformanceWarning)
+        with torch.no_grad(), torch.amp.autocast("cuda"):
+            device_emb = model(cat_feats, cont_feats).cpu().numpy()
+        
+        # Add columns via a dictionary to avoid multiple inserts
+        new_results = {
+            "device_embedding": list(device_emb),
+            "device_dist_score": np.zeros(len(ieee_df)) # Placeholder or calculate real dist
+        }
+        ieee_df = pd.concat([ieee_df, pd.DataFrame(new_results, index=ieee_df.index)], axis=1)
+        
+        return model, ieee_df.copy() # Return copy to ensure de-fragmentation
     def run(self, ieee_df: Optional[pd.DataFrame] = None) -> Tuple[Dict, pd.DataFrame]:
         if ieee_df is None: ieee_df = self.load_ieee_cis_merged()
         
@@ -669,7 +660,7 @@ class Phase2Context:
         ieee_df["seq_anomaly_score"] = seq_anomaly_scores
         ieee_df["paysim_boost"] = ieee_df["seq_anomaly_score"] * 1.5 
         
-        return ieee_df
+        return ieee_df, transformer
         
     def train_hetero_gnn(self, ieee_df: pd.DataFrame):
         logger.info("\n[PHASE 2] Training Model E: Graph Neural Network...")
@@ -744,13 +735,13 @@ class Phase2Context:
     def run(self, ieee_df: pd.DataFrame) -> Tuple[Dict, pd.DataFrame]:
         models = {}
         
+        transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=128, nhead=4, batch_first=True),
+            num_layers=2
+        ).to(self.device)
         # Check if Model C (SeqTransformer) exists
         if Path(self.cfg.seq_ieee_finetuned).exists():
             logger.info("\n✓ Loading cached Model C (Sequence Transformer)...")
-            transformer = nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model=128, nhead=4, batch_first=True),
-                num_layers=2
-            ).to(self.device)
             transformer.load_state_dict(torch.load(self.cfg.seq_ieee_finetuned, map_location=self.device))
             transformer.eval()
             
@@ -771,7 +762,7 @@ class Phase2Context:
                 ieee_df["paysim_boost"] = ieee_df["seq_anomaly_score"] * 1.5
             models["seq_transformer"] = transformer
         else:
-            ieee_df = self.train_sequence_transformer(ieee_df)
+            ieee_df, transformer = self.train_sequence_transformer(ieee_df)
             models["seq_transformer"] = transformer
         
         # Check if Model E (HeteroGNN) exists
@@ -871,7 +862,7 @@ class Phase3Specialists:
             logger.info(f"  Overall Reconstruction RMSE: {np.sqrt(np.mean(recon_err)):.4f}\n")
 
             ieee_df["recon_error"] = recon_err
-            return ieee_df
+            return ieee_df, model
 
     def _train_weak_supervisor(self, ieee_df: pd.DataFrame, target_col: str, model_path: str, model_name: str):
         features = ieee_df[["TransactionAmt", "recon_error", "tabnet_logit"]].fillna(0).values
@@ -909,7 +900,7 @@ class Phase3Specialists:
         logger.info(f"  Precision:         {precision_score(labels, preds_bin, zero_division=0):.4f}")
         logger.info(f"  Recall:            {recall_score(labels, preds_bin, zero_division=0):.4f}\n")
 
-        return ieee_df
+        return ieee_df, model
 
     def train_synthetic_id_detector(self, ieee_df: pd.DataFrame):
         logger.info("\n[PHASE 3] Training Model F: Synthetic ID (Weak Supervision)...")
@@ -1027,7 +1018,7 @@ class Phase4Synthesis:
         try:
             from PRODUCTION_MODELS_UPGRADE import train_lgbm_stacker_oof
             
-            lgbm_oof = train_lgbm_stacker_oof(
+            lgbm_oof, stacker_model = train_lgbm_stacker_oof(
                 feature_store=ieee_df,
                 stacking_cols=stack_cols,
                 cfg=self.cfg,
@@ -1046,7 +1037,7 @@ class Phase4Synthesis:
             logger.info(f"  OOF Precision: {precision_score(y, oof_bin, zero_division=0):.4f}")
             logger.info(f"  OOF Recall:    {recall_score(y, oof_bin, zero_division=0):.4f}")
             logger.info(f"  OOF F1 Score:  {f1_score(y, oof_bin, zero_division=0):.4f}\n")
-
+            torch.save(stacker_model, self.cfg.lgbm_stacker)
             ieee_df["raw_fraud_score"] = lgbm_oof
             return ieee_df
             
@@ -1229,7 +1220,7 @@ class FraudDetectionInference:
             if Path(self.cfg.platt_calibrator).exists():
                 self.calibrator = PlattCalibrator()
                 self.calibrator.load_state_dict(
-                    torch.load(self.cfg.platt_calibrator, map_location=self.device)
+                    torch.load(self.cfg.platt_calibrator, map_location=self.device, weights_only=False)
                 )
                 self.calibrator.eval()
                 logger.info("  ✓ Platt Calibrator loaded")
@@ -1421,8 +1412,15 @@ def get_random_live_transaction(ieee_df: pd.DataFrame) -> dict:
 def demo_single_row_inference(ieee_df: pd.DataFrame, device, models_dict: dict):
     """Demonstrate inference on a single synthetic transaction."""
     logger.info("\n" + "="*80)
-    logger.info("SINGLE-ROW INFERENCE DEMO")
+    logger.info("SINGLE-ROW INFERENCE DEMO WITH SHAP EXPLANATIONS")
     logger.info("="*80)
+    
+    # Check if models_dict is empty
+    if not models_dict:
+        logger.error("❌ No models available in models_dict! Cannot run inference demo.")
+        return
+    
+    logger.info(f"\nAvailable models for SHAP: {list(models_dict.keys())}\n")
 
     # 2. Define raw features for TabNet/DAE
     feat_cols = [c for c in (V_COLS + C_COLS + D_COLS) if c in ieee_df.columns]
@@ -1470,17 +1468,24 @@ def demo_single_row_inference(ieee_df: pd.DataFrame, device, models_dict: dict):
     }
     
     # 6. Initialize explainer using the passed-in models_dict
+    logger.info("\n📊 Initializing SHAP explainers...")
     unified_explainer = UnifiedFraudExplainer(
         models_dict=models_dict,
         background_data=bg_data,
         feature_names=feat_names
     )
     
+    if not unified_explainer.explainers:
+        logger.warning("⚠️  No SHAP explainers available! Inference will proceed without explanations.")
+    else:
+        logger.info(f"✓ SHAP explainers ready: {list(unified_explainer.explainers.keys())}\n")
+    
     cfg = PipelineConfig()
     inferrer = FraudDetectionInference(cfg)
     
     # 7. Fixed Loop Logic: Just test on 3 random transactions
-    for _ in range(3): 
+    logger.info("🔍 Running inference on sample transactions...\n")
+    for txn_num in range(1, 4): 
         # Get one live transaction (assuming it returns a dict or pd.Series)
         live_txn = get_random_live_transaction(ieee_df)
         
@@ -1490,29 +1495,43 @@ def demo_single_row_inference(ieee_df: pd.DataFrame, device, models_dict: dict):
         else:
             row = live_txn.to_frame().T
 
-        logger.info(f"\n--- Transaction {row['TransactionID'].values[0]} ---")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Transaction #{txn_num}: {row['TransactionID'].values[0]}")
+        logger.info(f"{'='*80}")
         
         # Run inference
         result = inferrer.infer_single_row(live_txn, include_reasons=True)
         
         # Run Explainer (using .to_frame().T for stack_x to avoid LGBM feature name warnings)
-        raw_x = row[feat_names["raw"]].fillna(0).values.reshape(1, -1)
-        weak_x = row[feat_names["weak"]].fillna(0).values.reshape(1, -1)
-        stack_x = row[feat_names["stack"]].fillna(0).to_frame().T
+        # Ensure raw_x and weak_x are proper float32 tensors
+        raw_x = torch.tensor(row[feat_names["raw"]].fillna(0).values.astype(np.float32), device=device)
+        weak_x = torch.tensor(row[feat_names["weak"]].fillna(0).values.astype(np.float32), device=device)
+        
+        # CRITICAL: Keep as a 2D DataFrame (1 row, N columns) to maintain feature names
+        stack_x = row[feat_names["stack"]].fillna(0).astype(np.float32) 
 
+        # Now pass to explainer
         reasons = unified_explainer.explain_transaction(raw_x, weak_x, stack_x, device)
 
         # Print results safely
         if "error" in result:
-            logger.error(f"Inference Failed: {result['error']}")
+            logger.error(f"❌ Inference Failed: {result['error']}")
         else:
-            logger.info(f"  Amount:           ${row['TransactionAmt'].values[0]:,.2f}")
-            logger.info(f"  Raw Score:        {result.get('raw_fraud_score', 0):.4f}")
-            logger.info(f"  Calibrated Prob:  {result.get('calibrated_prob', 0):.4f}")
-            logger.info(f"  Decision:         {result.get('decision', 'UNKNOWN').upper()}")
-            logger.info(f"   Reasons:")
-            for r in reasons[:4]: 
-                logger.info(f"     * {r}")
+            logger.info(f"\n  💱 Amount:           ${row['TransactionAmt'].values[0]:,.2f}")
+            logger.info(f"  📈 Raw Score:        {result.get('raw_fraud_score', 0):.4f}")
+            logger.info(f"  🎯 Calibrated Prob:  {result.get('calibrated_prob', 0):.4f}")
+            logger.info(f"  ✅ Decision:         {result.get('decision', 'UNKNOWN').upper()}")
+            
+            if reasons:
+                logger.info(f"\n  📋 SHAP Explanations:")
+                for i, r in enumerate(reasons[:5], 1): 
+                    logger.info(f"     {i}. {r}")
+            else:
+                logger.warning(f"  ⚠️  No SHAP explanations available (no explainers ready)")
+    
+    logger.info(f"\n{'='*80}")
+    logger.info("Demo Complete")
+    logger.info(f"{'='*80}\n")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN ORCHESTRATOR
@@ -1539,7 +1558,9 @@ def main():
     if phase in ["PHASE_1", "ALL"]:
         logger.info("\n>>> Starting PHASE 1: FOUNDATION (Models A & B)\n")
         phase1 = Phase1Foundation(cfg)
-        ieee_df = phase1.run()
+        models_p1, ieee_df = phase1.run()
+        all_models.update(models_p1)  # Add Phase 1 models
+        logger.info(f"  Phase 1 models available: {list(models_p1.keys())}")
     else:
         # Load from checkpoint
         try:
@@ -1548,22 +1569,31 @@ def main():
         except:
             logger.warning("Could not load checkpoint, running Phase 1...")
             phase1 = Phase1Foundation(cfg)
-            ieee_df = phase1.run()
+            models_p1, ieee_df = phase1.run()
+            all_models.update(models_p1)
     
     if phase in ["PHASE_2", "ALL"]:
         logger.info("\n>>> Starting PHASE 2: CONTEXT (Models E & C)\n")
         phase2 = Phase2Context(cfg)
-        ieee_df = phase2.run(ieee_df)
+        models_p2, ieee_df = phase2.run(ieee_df)
+        all_models.update(models_p2)  # Add Phase 2 models
+        logger.info(f"  Phase 2 models available: {list(models_p2.keys())}")
     
     if phase in ["PHASE_3", "ALL"]:
         logger.info("\n>>> Starting PHASE 3: SPECIALISTS (Models F, G & D)\n")
         phase3 = Phase3Specialists(cfg)
-        ieee_df = phase3.run(ieee_df)
+        models_p3, ieee_df = phase3.run(ieee_df)
+        all_models.update(models_p3)  # Add Phase 3 models
+        logger.info(f"  Phase 3 models available: {list(models_p3.keys())}")
     
     if phase in ["PHASE_4", "ALL"]:
         logger.info("\n>>> Starting PHASE 4: SYNTHESIS (Models H & I)\n")
         phase4 = Phase4Synthesis(cfg)
-        ieee_df = phase4.run(ieee_df)
+        models_p4, ieee_df = phase4.run(ieee_df)
+        all_models.update(models_p4)  # Add Phase 4 models
+        logger.info(f"  Phase 4 models available: {list(models_p4.keys())}")
+    
+    logger.info(f"\n✓ All available models for SHAP: {list(all_models.keys())}")
     
     # Save feature store
     Path(cfg.feature_root).mkdir(parents=True, exist_ok=True)
@@ -1579,8 +1609,12 @@ def main():
     # Evaluation
     test_full_pipeline(ieee_df, cfg)
 
-    # Demo inference with all models
-    demo_single_row_inference(ieee_df, device=cfg.device, models_dict=all_models)
+    # Demo inference with all models (with safety check)
+    if all_models:
+        logger.info(f"\n✓ Starting inference demo with {len(all_models)} models...")
+        demo_single_row_inference(ieee_df, device=cfg.device, models_dict=all_models)
+    else:
+        logger.warning("\n⚠️  No models available for inference demo (all_models is empty)")
     
     logger.info("\n" + "="*80)
     logger.info("PIPELINE COMPLETE")
